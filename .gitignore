@@ -1,0 +1,41 @@
+# raw campaign data: 58 directories, about 10.9 GB -- published as a separate archive
+jamx_*/
+*.tar.gz
+*.zip
+
+# credentials and anything that holds them
+hosts.yml
+.netrc
+*.pem
+*.key
+*token*
+*secret*
+
+# build and editor noise
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+*.bak_*
+*.orig
+*.rej
+nohup.out
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# LaTeX build products, if the paper is ever kept alongside
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.out
+
+# run logs are large and machine-specific; the sample run carries truncated copies on purpose
+*.log
+!CHANGELOG.md

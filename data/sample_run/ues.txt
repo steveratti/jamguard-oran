@@ -1,0 +1,10 @@
+set label "1" at 905.884,400.247 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "2" at 701.426,315.768 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "3" at 392.621,679.216 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "4" at 458,77.4174 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "5" at 241.313,835.563 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "6" at 609.666,462.68 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "7" at 235.138,549.624 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "8" at 757.051,663.235 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "9" at 727.938,206.601 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
+set label "10" at 158.399,495.962 left font "Helvetica,8" textcolor rgb "black" front point pt 1 ps 0.3 lc rgb "black" offset 0,0
