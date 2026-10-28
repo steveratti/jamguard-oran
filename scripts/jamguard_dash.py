@@ -294,7 +294,7 @@ const SC={eMBB:'#8b96a3',military:'#ff9f43',ambulance:'#ff5c7a',IoT:'#2ed3a0'},S
 const $=id=>document.getElementById(id);let R=null,timer=null,RUNS=[],ON=[[4,10]];
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function prep(c){const r=c.getBoundingClientRect(),d=devicePixelRatio||1;c.width=r.width*d;c.height=c.getAttribute('height')*d;const g=c.getContext('2d');g.scale(d,d);return[g,r.width,+c.getAttribute('height')]}
+function prep(c){if(!c.dataset.h)c.dataset.h=c.getAttribute('height');const H=+c.dataset.h,d=devicePixelRatio||1;c.style.height=H+'px';const r=c.getBoundingClientRect();c.width=Math.round(r.width*d);c.height=Math.round(H*d);const g=c.getContext('2d');g.setTransform(d,0,0,d,0,0);return[g,r.width,H]}
 function onIntervals(){const a=+$('j0').value,b=+$('j1').value;if(R&&R.jammer&&R.jammer.on&&+R.jammer.on[0][0]==a&&+R.jammer.on[R.jammer.on.length-1][1]==b)return R.jammer.on;return[[a,b]]}
 function jamOn(t){return ON.some(([a,b])=>t>=a&&t<b)}
 function shade(g,X,x0,x1,T,Hh){g.fillStyle=css('--jam');for(const[a,b]of ON){const A=Math.max(a,x0),B=Math.min(b,x1);if(B>A)g.fillRect(X(A),T,X(B)-X(A),Hh)}}
@@ -313,7 +313,9 @@ function lineChart(id,lg,k,ymaxDef){const c=$(id),[g,W,H]=prep(c);const tm=Math.
  g.lineWidth=1;$(lg).innerHTML=lgh+'<span>shaded = jammer on · dashed red = DETECT · green = PROBE_OK / ANCHOR_OK · solid red = ANCHOR_BAD</span>'}
 function uePos(t){const P={};for(const k in R.pos)P[k]={...R.pos[k]};for(const e of R.events){if(e.t>t)break;if(e.imsi>0&&e.x>=0){P[e.imsi]=P[e.imsi]||{};P[e.imsi].x=e.x;P[e.imsi].y=e.y}}return P}
 function mapChart(){const c=$('cMap'),[g,W,H]=prep(c),t=+$('tsl').value;$('tslv').textContent='t = '+t.toFixed(1)+' s'+(jamOn(t)?'  ·  jammer ON':'');
- const P=uePos(t),jx=+$('jx').value,jy=+$('jy').value;let xs=[jx],ys=[jy];for(const k in P){if(P[k].x==null)continue;xs.push(P[k].x);ys.push(P[k].y)}
+ const P=uePos(t),jx=+$('jx').value,jy=+$('jy').value;let xs=[jx],ys=[jy];
+ /* fixed frame for the whole run (all positions ever seen), so the map does not re-zoom on every refresh */
+ for(const k in R.pos){xs.push(R.pos[k].x);ys.push(R.pos[k].y)}for(const e of R.events)if(e.x>=0&&e.y>=0){xs.push(e.x);ys.push(e.y)}for(const k in P)if(P[k].x!=null){xs.push(P[k].x);ys.push(P[k].y)}
  const x0=Math.min(...xs)-80,x1=Math.max(...xs)+80,y0=Math.min(...ys)-80,y1=Math.max(...ys)+80,s=Math.min((W-20)/(x1-x0),(H-20)/(y1-y0));
  const X=v=>10+(v-x0)*s,Y=v=>H-10-(v-y0)*s;g.strokeStyle=css('--line');g.strokeRect(1,1,W-2,H-2);
  let est=null;for(const e of R.events){if(e.t>t)break;if(e.ev=='LOCALIZE'||e.est)est=e.est?e:est;if(e.ev=='PROBE_OK'||e.ev=='CLEAR')est=null}
