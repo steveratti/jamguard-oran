@@ -1,0 +1,76 @@
+nohup: ignoring input
+attack runs: pos50_s1, pos50_s2, pos50_s3, pos50_s4, pos50_s5
+attack-free: neg_s1, neg_s2, neg_s3, neg_s4, neg_s5
+
+(1) SANITY -- relations that hold by construction
+
+    run            initial    total      errInit   errTot    errResid  all hold?
+    pos50_s1       129609     177349     24469     37849     1926      yes
+    pos50_s2       130690     176156     22116     33422     1634      yes
+    neg_s1         172458     248037     39074     60180     3844      yes
+    neg_s2         151689     211252     29285     42716     2315      yes
+
+    checks: errInit<=initial, errResid<=errTot, errInit<=errTot, total>=initial
+
+(2) LEVELS -- the three rates, before and during the attack
+
+    run            window iBLER      totBLER    rBLER      rBLER/iBLER
+    pos50_s1       pre    0.2256     0.2416     0.0201     0.089
+                   attack 0.1537     0.1846     0.0098     0.064
+    pos50_s2       pre    0.2139     0.2185     0.0169     0.079
+                   attack 0.1321     0.1610     0.0082     0.062
+    pos50_s3       pre    0.2633     0.2851     0.0363     0.138
+                   attack 0.1890     0.2066     0.0116     0.062
+    pos50_s4       pre    0.1843     0.1929     0.0152     0.083
+                   attack 0.1566     0.1861     0.0106     0.068
+    pos50_s5       pre    0.2098     0.2059     0.0136     0.065
+                   attack 0.1535     0.1764     0.0086     0.056
+    neg_s1         pre    0.2248     0.2409     0.0202     0.090
+                   attack 0.2321     0.2444     0.0198     0.085
+    neg_s2         pre    0.2130     0.2177     0.0166     0.078
+                   attack 0.1815     0.1869     0.0116     0.064
+    neg_s3         pre    0.2620     0.2836     0.0358     0.137
+                   attack 0.2502     0.2593     0.0264     0.105
+    neg_s4         pre    0.1849     0.1939     0.0156     0.085
+                   attack 0.2090     0.2101     0.0166     0.080
+    neg_s5         pre    0.2097     0.2064     0.0140     0.067
+                   attack 0.2329     0.2288     0.0172     0.074
+
+    iBLER is what link adaptation regulates: it should sit near the loop target and
+    move little. rBLER is outside the loop. If rBLER rises under the jammer while
+    iBLER does not, the residual counter carries the signal the regulated one cannot.
+    If neither moves, the error path is not where this jammer shows up at all.
+
+(3) SEPARATION -- windowed per-UE residual rate as a detector
+
+    window: 10 reports   attack runs: 5   attack-free runs: 5
+
+    beta    K    Pd      delay_s   FA/min    benign_s
+    0.005   1    1.000   0.10      2.87      104
+    0.005   2    1.000   0.10      2.87      104
+    0.005   3    1.000   0.10      2.87      104
+    0.010   1    1.000   0.10      2.87      104
+    0.010   2    1.000   0.10      3.44      104
+    0.010   3    1.000   0.10      4.59      104
+    0.020   1    1.000   0.10      3.44      104
+    0.020   2    1.000   0.10      8.61      104
+    0.020   3    1.000   0.20      22.97     104
+    0.050   1    1.000   0.10      17.22     104
+    0.050   2    0.800   1.98      29.86     104
+    0.050   3    0.200   3.90      17.22     104
+    0.100   1    1.000   2.08      22.39     104
+    0.100   2    0.200   1.80      1.72      104
+    0.100   3    0.000   --        0.00      104
+
+    comparable with the SINR detectors on the constant jammer: D2 reaches Pd 1.00 at
+    0.00 false alarms per minute. A residual-rate detector is only interesting if it
+    does that too, or if it does it where the SINR detectors score Pd near zero.
+
+(4) ONSET -- residual rate per report around the jammer start
+
+    pos50_s1       0.019 0.010 0.012 0.024 0.007 0.013 0.001 0.012 0.018 0.015 0.004 0.029 0.002 0.001 0.005 0.011 0.009 0.001 0.010
+    pos50_s2       0.013 0.043 0.007 0.003 0.002 0.009 0.002 0.010 0.005 0.015 0.005 0.001 0.010 0.001 0.007 0.018 0.011 0.020 0.029
+    pos50_s3       0.006 0.072 0.039 0.014 0.008 0.018 0.015 0.007 0.017 0.021 0.008 0.016 0.004 0.007 0.005 0.009 0.017 0.017 0.006
+    pos50_s4       0.021 0.024 0.018 0.031 0.018 0.005 0.003 0.010 0.001 0.001 0.006 0.010 0.014 0.005 0.012 0.029 0.015 0.008 0.015
+    pos50_s5       0.001 0.002 0.005 0.027 0.018 0.004 0.000 0.004 0.018 0.011 0.009 0.004 0.007 0.007 0.009 0.005 0.002 0.018 0.011
+    (columns are reports; the first three precede the jammer)

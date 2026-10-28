@@ -1,0 +1,2 @@
+x,y,z,power_dbm,jammer_on,rng_run,start_s,stop_s,period_ms,duty
+710,510,1.5,50,1,1,4,10,0,0.5
