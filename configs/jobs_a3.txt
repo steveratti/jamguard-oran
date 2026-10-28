@@ -1,0 +1,5 @@
+~/jamx_A3/pw50_p7_s1|--simTime=14 --militaryUes=2 --ambulanceUes=5 --iotUes=9 --jammerStart=4 --jammerStop=10 --RngRun=1 --jammerPowerDbm=50 --jgPolicy=7|
+~/jamx_A3/pw50_p7_s2|--simTime=14 --militaryUes=2 --ambulanceUes=5 --iotUes=9 --jammerStart=4 --jammerStop=10 --RngRun=2 --jammerPowerDbm=50 --jgPolicy=7|
+~/jamx_A3/pw50_p7_s3|--simTime=14 --militaryUes=2 --ambulanceUes=5 --iotUes=9 --jammerStart=4 --jammerStop=10 --RngRun=3 --jammerPowerDbm=50 --jgPolicy=7|
+~/jamx_A3/pw50_p7_s4|--simTime=14 --militaryUes=2 --ambulanceUes=5 --iotUes=9 --jammerStart=4 --jammerStop=10 --RngRun=4 --jammerPowerDbm=50 --jgPolicy=7|
+~/jamx_A3/pw50_p7_s5|--simTime=14 --militaryUes=2 --ambulanceUes=5 --iotUes=9 --jammerStart=4 --jammerStop=10 --RngRun=5 --jammerPowerDbm=50 --jgPolicy=7|

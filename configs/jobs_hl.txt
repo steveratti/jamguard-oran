@@ -1,0 +1,20 @@
+$HOME/jamx_H/pw50_p0_s1|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=1 --jammerPowerDbm=50 --jgPolicy=0|
+$HOME/jamx_H/pw50_p2_s1|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=1 --jammerPowerDbm=50 --jgPolicy=2|
+$HOME/jamx_H/pw50_p4_s1|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=1 --jammerPowerDbm=50 --jgPolicy=2 --jgSlice=1 --jgSrec=1|
+$HOME/jamx_H/pw50_p5_s1|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=1 --jammerPowerDbm=50 --jgPolicy=5|
+$HOME/jamx_H/pw50_p0_s2|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=2 --jammerPowerDbm=50 --jgPolicy=0|
+$HOME/jamx_H/pw50_p2_s2|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=2 --jammerPowerDbm=50 --jgPolicy=2|
+$HOME/jamx_H/pw50_p4_s2|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=2 --jammerPowerDbm=50 --jgPolicy=2 --jgSlice=1 --jgSrec=1|
+$HOME/jamx_H/pw50_p5_s2|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=2 --jammerPowerDbm=50 --jgPolicy=5|
+$HOME/jamx_H/pw50_p0_s3|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=3 --jammerPowerDbm=50 --jgPolicy=0|
+$HOME/jamx_H/pw50_p2_s3|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=3 --jammerPowerDbm=50 --jgPolicy=2|
+$HOME/jamx_H/pw50_p4_s3|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=3 --jammerPowerDbm=50 --jgPolicy=2 --jgSlice=1 --jgSrec=1|
+$HOME/jamx_H/pw50_p5_s3|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=3 --jammerPowerDbm=50 --jgPolicy=5|
+$HOME/jamx_H/pw50_p0_s4|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=4 --jammerPowerDbm=50 --jgPolicy=0|
+$HOME/jamx_H/pw50_p2_s4|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=4 --jammerPowerDbm=50 --jgPolicy=2|
+$HOME/jamx_H/pw50_p4_s4|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=4 --jammerPowerDbm=50 --jgPolicy=2 --jgSlice=1 --jgSrec=1|
+$HOME/jamx_H/pw50_p5_s4|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=4 --jammerPowerDbm=50 --jgPolicy=5|
+$HOME/jamx_H/pw50_p0_s5|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=5 --jammerPowerDbm=50 --jgPolicy=0|
+$HOME/jamx_H/pw50_p2_s5|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=5 --jammerPowerDbm=50 --jgPolicy=2|
+$HOME/jamx_H/pw50_p4_s5|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=5 --jammerPowerDbm=50 --jgPolicy=2 --jgSlice=1 --jgSrec=1|
+$HOME/jamx_H/pw50_p5_s5|--simTime=14 --N_Ues=20 --militaryUes=2,8,14 --ambulanceUes=5,11,17 --iotUes=9,15,20 --jammerStart=4 --jammerStop=10 --RngRun=5 --jammerPowerDbm=50 --jgPolicy=5|
