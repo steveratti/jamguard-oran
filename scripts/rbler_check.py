@@ -10,7 +10,7 @@ regulates it. If interference defeats hybrid retransmission, it must rise.
 Until now this platform could not be asked the question. MmWavePhyTrace::UpdateTraces classified
 transport blocks by redundancy version alone and never read params.m_corrupt, so the item emitted
 as TB.ErrTotalNbrDl carried a retransmission count, not an error count. The three counters of
-3GPP TS 28.552 clause 5.1.1.7 are now emitted (ns-o-ran-patches/patch_rbler_kpm.py):
+3GPP TS 28.552 clause 5.1.1.7 are now emitted (patches/patch_rbler_kpm.py):
 
     TB.ErrNbrDlInitial.UEID     corrupt on the first transmission      (5.1.1.7.2)
     TB.ErrTotalNbrDlTrue.UEID   corrupt on any transmission            (5.1.1.7.4)

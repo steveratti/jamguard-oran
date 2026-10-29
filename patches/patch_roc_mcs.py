@@ -15,7 +15,7 @@
 #
 # The MCS is read from CARR.PDSCHMCSDist.Bin1..6.UEID in the DU part of the E2SM-KPM report, which
 # only carries usable values once the measurement is decoupled from the trace file
-# (ns-o-ran-patches/patch_du_kpm.py). Report instants are 100 ms, the same tick as the replay.
+# (patches/patch_du_kpm.py). Report instants are 100 ms, the same tick as the replay.
 #
 # usage: python3 ~/patch_roc_mcs.py [path to roc_replay.py]   then: ~/roc_replay.py ... --dmcs 4
 # Idempotent; keeps a .bak_mcs copy.
