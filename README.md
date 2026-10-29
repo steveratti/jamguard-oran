@@ -6,7 +6,7 @@ running on FlexRIC and ns-O-RAN (ns-3 mmWave, EN-DC).
 | folder | content |
 |---|---|
 | `xapp/` | FlexRIC xApp (C): detection, trilateration, mitigation, slicing, recovery |
-| `ns3/scratch/` | EN-DC scenario with jammer, emulated RIC loop (`jamguard_local.h`), anchor-guard build |
+| ns-o-ran/ | current ns-3 / ns-O-RAN modifications: `git diff` patches, full copies of the modified files, scenarios (`scratch/`) and the emulated RIC loop (`jamguard_local.h`) |
 | `patches/` | idempotent patch scripts applied to ns-O-RAN and FlexRIC (each keeps a `.bak_*` copy) |
 | `scripts/` | campaign runner, live launcher, analysis and statistics |
 | `results/` | campaign summaries and live-run logs |

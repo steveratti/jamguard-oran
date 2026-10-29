@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: LicenseRef-CSSL-1.0
  */
-// RIC-TaaP xApps
-// Zero-Touch ES with cell utilization xApp
+// JamGuard: slice-aware closed-loop xApp for jamming detection, localization and mitigation.
+// Built on the FlexRIC xApp API and derived from its xApp examples; distributed under CSSL-1.0 like FlexRIC.
 
 #include "../../../../src/xApp/e42_xapp_api.h"
 #include "../../../../src/sm/rc_sm/ie/ir/ran_param_struct.h"
