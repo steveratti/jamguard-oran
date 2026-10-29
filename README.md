@@ -19,7 +19,7 @@ the xApp is subject to FlexRIC's licence terms.
 ## Paper
 S. A. Ratti, A. Piccioni, W. Tiberti, C. Centofanti, F. Graziosi, D. Cassioli, A. Marotta, "JamGuard: A Slice-Aware Closed-Loop xApp for Jamming Detection, Localization, and Mitigation in O-RAN", submitted to IEEE Access, 2026.
 
-Previous work (jammer detection and geolocation, offline): S. A. Ratti et al., "An O-RAN-Native xApp Framework for Jammer Detection and Geolocation", Sensors (MDPI), accepted 27 Oct. 2026 - dataset and code: https://github.com/steveratti/oran-jammer-detection-geolocation-dataset
+Previous work (jammer detection and geolocation, offline): S. A. Ratti et al., "An O-RAN-Native xApp Framework for Jammer Detection and Geolocation", Sensors (MDPI), vol. 26, no. 21, art. 6859, 2026, doi:10.3390/s26216859 - dataset and code: https://github.com/steveratti/oran-jammer-detection-geolocation-dataset
 
 ## Dashboard
 
