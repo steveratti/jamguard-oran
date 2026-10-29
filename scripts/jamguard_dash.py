@@ -92,11 +92,38 @@ def read_jammer(d):
         pass
     return j
 
+XLINE = re.compile(r'^\[JamGuard\] rep (\d+)\s+(\S+)\s+UE (\d+)\s+(-?\d+) -> (-?\d+)\s+SINR (-?[\d.]+) dB \(drop (-?[\d.]+)\)\s*(.*)$')
+ZONE = re.compile(r'zone \((-?[\d.]+), (-?[\d.]+)\) r=([\d.]+)')
+
+def read_xapp_events(d):
+    """live run still in progress: jamguard_log.csv is written at the end, so read the xApp console log"""
+    ev = []
+    try:
+        with open(d + '/xapp.txt', errors='ignore') as f:
+            for line in f:
+                m = XLINE.match(line.strip())
+                if not m: continue
+                note = m.group(8); z = ZONE.search(note)
+                ev.append({'t': round(int(m.group(1)) / 10.0 + LIVE_OFFSET, 3), 'ev': m.group(2), 'imsi': int(m.group(3)),
+                           'from': int(m.group(4)), 'to': int(m.group(5)), 'sinr': float(m.group(6)), 'drop': float(m.group(7)),
+                           'x': -1.0, 'y': -1.0, 'est': 1 if z else 0, 'ex': float(z.group(1)) if z else 0.0,
+                           'ey': float(z.group(2)) if z else 0.0, 'er': float(z.group(3)) if z else 0.0, 'note': note})
+    except OSError:
+        return None
+    ev.sort(key=lambda e: e['t'])
+    return ev
+
 def read_events(d):
     ev, mode = [], 'emulated'
     path, tcol = d + '/jamguard_local.csv', 0
-    if not os.path.exists(path) and os.path.exists(d + '/jamguard_log.csv'):
-        path, tcol, mode = d + '/jamguard_log.csv', 1, 'live'
+    if not os.path.exists(path):
+        lg, xa = d + '/jamguard_log.csv', d + '/xapp.txt'
+        if os.path.exists(xa) and (not os.path.exists(lg) or os.path.getmtime(xa) > os.path.getmtime(lg) + 5):
+            xe = read_xapp_events(d)
+            if xe is not None:
+                return xe, 'live'
+        if os.path.exists(lg):
+            path, tcol, mode = lg, 1, 'live'
     try:
         with open(path, errors='ignore') as f:
             next(f, None)
@@ -214,6 +241,19 @@ def read_run(d):
         except (OSError, ValueError):
             pass
     res['pos'] = pos; res['cfg'] = cfg
+    # UE trajectories (k-th row of a UE = report k, 10 Hz), every 0.5 s, so the map follows the UEs
+    track, k = {}, {}
+    try:
+        with open(d + '/ue_position.txt') as f:
+            for line in f:
+                x = line.replace(',', ' ').split()
+                try: im, px, py = int(float(x[1])), float(x[2]), float(x[3])
+                except (ValueError, IndexError): continue
+                k[im] = k.get(im, 0) + 1
+                if k[im] % 5 == 1: track.setdefault(im, []).append([round(k[im] / 10.0, 1), round(px, 1), round(py, 1)])
+    except OSError:
+        pass
+    res['track'] = track
     res['jammer'] = read_jammer(d)
     m = re.search(r'pw(\d+)_p(\d)_s(\d+)', d)
     res['power'] = int(m.group(1)) if m else (res['jammer']['power'] if res['jammer'].get('file') else None)
@@ -311,11 +351,11 @@ function lineChart(id,lg,k,ymaxDef){const c=$(id),[g,W,H]=prep(c);const tm=Math.
  for(const s of SN){const ser=R.slices[s];if(!ser)continue;g.strokeStyle=SC[s];g.lineWidth=1.6;g.beginPath();let st=false;
   for(const p of ser){if(p[k]==null||p[0]<0.3){st=false;continue}const x=X(p[0]),y=Y(Math.min(p[k],ym));st?g.lineTo(x,y):g.moveTo(x,y);st=true}g.stroke();lgh+=`<span><i style="background:${SC[s]}"></i>${s}</span>`}
  g.lineWidth=1;$(lg).innerHTML=lgh+'<span>shaded = jammer on · dashed red = DETECT · green = PROBE_OK / ANCHOR_OK · solid red = ANCHOR_BAD</span>'}
-function uePos(t){const P={};for(const k in R.pos)P[k]={...R.pos[k]};for(const e of R.events){if(e.t>t)break;if(e.imsi>0&&e.x>=0){P[e.imsi]=P[e.imsi]||{};P[e.imsi].x=e.x;P[e.imsi].y=e.y}}return P}
+function uePos(t){const P={};for(const k in R.pos)P[k]={...R.pos[k]};if(R.track)for(const k in R.track){let q=null;for(const p of R.track[k]){if(p[0]>t+1e-6)break;q=p}if(q){P[k]=P[k]||{};P[k].x=q[1];P[k].y=q[2]}}for(const e of R.events){if(e.t>t)break;if(e.imsi>0&&e.x>=0){P[e.imsi]=P[e.imsi]||{};P[e.imsi].x=e.x;P[e.imsi].y=e.y}}return P}
 function mapChart(){const c=$('cMap'),[g,W,H]=prep(c),t=+$('tsl').value;$('tslv').textContent='t = '+t.toFixed(1)+' s'+(jamOn(t)?'  ·  jammer ON':'');
  const P=uePos(t),jx=+$('jx').value,jy=+$('jy').value;let xs=[jx],ys=[jy];
  /* fixed frame for the whole run (all positions ever seen), so the map does not re-zoom on every refresh */
- for(const k in R.pos){xs.push(R.pos[k].x);ys.push(R.pos[k].y)}for(const e of R.events)if(e.x>=0&&e.y>=0){xs.push(e.x);ys.push(e.y)}for(const k in P)if(P[k].x!=null){xs.push(P[k].x);ys.push(P[k].y)}
+ for(const k in R.pos){xs.push(R.pos[k].x);ys.push(R.pos[k].y)}if(R.track)for(const k in R.track)for(const p of R.track[k]){xs.push(p[1]);ys.push(p[2])}for(const e of R.events)if(e.x>=0&&e.y>=0){xs.push(e.x);ys.push(e.y)}for(const k in P)if(P[k].x!=null){xs.push(P[k].x);ys.push(P[k].y)}
  const x0=Math.min(...xs)-80,x1=Math.max(...xs)+80,y0=Math.min(...ys)-80,y1=Math.max(...ys)+80,s=Math.min((W-20)/(x1-x0),(H-20)/(y1-y0));
  const X=v=>10+(v-x0)*s,Y=v=>H-10-(v-y0)*s;g.strokeStyle=css('--line');g.strokeRect(1,1,W-2,H-2);
  let est=null;for(const e of R.events){if(e.t>t)break;if(e.ev=='LOCALIZE'||e.est)est=e.est?e:est;if(e.ev=='PROBE_OK'||e.ev=='CLEAR')est=null}
@@ -325,7 +365,7 @@ function mapChart(){const c=$('cMap'),[g,W,H]=prep(c),t=+$('tsl').value;$('tslv'
   g.fillStyle='#4ea1ff';g.fillRect(X(est.ex)-5,Y(est.ey)-5,10,10);$('locerr').textContent='localization error '+Math.hypot(est.ex-jx,est.ey-jy).toFixed(0)+' m, zone r='+est.er.toFixed(0)+' m'}else $('locerr').textContent='';
  g.fillStyle=on?'#ff5c7a':css('--mut');g.beginPath();g.moveTo(X(jx),Y(jy)-9);g.lineTo(X(jx)+8,Y(jy)+6);g.lineTo(X(jx)-8,Y(jy)+6);g.fill();g.font='11px system-ui';g.fillText('jammer'+(R.scenario.startsWith('B')?' (NR+LTE)':''),X(jx)+10,Y(jy)+4);
  const st=laneState(t);for(const k in P){if(P[k].x==null)continue;const u=R.ues[k],sl=u?SN[u.slice]||'eMBB':'eMBB';g.fillStyle=SC[sl];g.beginPath();g.arc(X(P[k].x),Y(P[k].y),6,0,7);g.fill();
-  if(st[k]=='LTE'){g.strokeStyle=anchorAt(t)=='bad'?css('--bad'):css('--lte');g.lineWidth=2.5;g.stroke();g.lineWidth=1}g.fillStyle=css('--fg');g.fillText('UE'+k+(st[k]?' '+st[k]:''),X(P[k].x)+8,Y(P[k].y)-6)}}
+  if(st[k]=='LTE'){g.strokeStyle=anchorAt(t)=='bad'?css('--bad'):css('--lte');g.lineWidth=2.5;g.stroke();g.lineWidth=1}g.fillStyle=css('--fg');if(Object.keys(P).length<=15||(u&&u.slice>0)||st[k]=='LTE')g.fillText('UE'+k+(st[k]?' '+st[k]:''),X(P[k].x)+8,Y(P[k].y)-6)}}
 function laneState(t){const s={};for(const k in R.pos)s[k]='c'+R.pos[k].cell;for(const e of R.events){if(e.t>t)break;if(e.imsi<=0)continue;
  if(e.ev=='EVAC_LTE'||e.ev=='PROBE_FAIL')s[e.imsi]='LTE';else if(['HO_NR','PROBE','RETURN'].includes(e.ev))s[e.imsi]='c'+e.to}return s}
 /* LTE-anchor state over time: unverified while a canary test runs, bad after ANCHOR_BAD, ok after ANCHOR_OK */
@@ -333,7 +373,7 @@ function anchorSegs(){const seg=[];let cur=null,t0=0;const has=R.events.some(e=>
  for(const e of R.events){let nx=null;if(e.ev=='ANCHOR_BAD')nx='bad';else if(e.ev=='ANCHOR_OK')nx='ok';else if(e.ev=='ANCHOR_RETRY'||(e.ev=='EVAC_LTE'&&/canary/.test(e.note)))nx='test';else if(e.ev=='DETECT')nx='test';
   if(nx&&nx!=cur){if(cur)seg.push([t0,e.t,cur]);cur=nx;t0=e.t}}if(cur)seg.push([t0,Math.max(R.tmax,t0),cur]);return seg}
 function anchorAt(t){let s=null;for(const[a,b,v]of anchorSegs())if(t>=a&&t<b)s=v;return s}
-function laneChart(){const c=$('cLane'),[g,W,H]=prep(c),ids=Object.keys(R.ues).map(Number).sort((a,b)=>a-b),tm=Math.max(R.tmax,1);
+function laneChart(){const c=$('cLane');{const n=Object.keys(R.ues).length,h=Math.max(330,44+n*13);if(+c.dataset.h!==h){c.dataset.h=h;c.setAttribute('height',h)}}const [g,W,H]=prep(c),ids=Object.keys(R.ues).map(Number).sort((a,b)=>a-b),tm=Math.max(R.tmax,1);
  const L=74,Rr=10,T=20,B=22,lh=(H-T-B)/Math.max(ids.length,1),X=v=>L+v/tm*(W-L-Rr);g.font='11px system-ui';
  shade(g,X,0,tm,T,H-T-B);
  g.fillStyle=css('--mut');g.fillText('LTE anchor',4,13);const AC={bad:css('--bad'),ok:css('--ok'),test:css('--warn')};
@@ -352,7 +392,7 @@ function kpis(){const ev=R.events,j0=ON[0][0],j1=ON[ON.length-1][1];
  const d=dets.find(e=>e.t>=j0-0.1),fa=dets.filter(e=>!inAtk(e)).length;
  const act=ev.filter(e=>['EVAC_LTE','HO_NR','PROBE','RETURN','PROBE_FAIL'].includes(e.ev)).length;
  const pk=ev.find(e=>(e.ev=='PROBE_OK'||e.ev=='PASSIVE_OK')&&e.t>=j1),loc=ev.filter(e=>e.ev=='LOCALIZE'&&e.t>=j0&&e.t<j1).pop();
- const keep=s=>{const pre=meanThr(s,1,j0),dur=ON.map(([a,b])=>meanThr(s,a,b)).filter(v=>v!=null);if(pre==null||!dur.length||pre<=0)return'–';return(100*dur.reduce((x,v)=>x+v,0)/dur.length/pre).toFixed(0)+' %'};
+ const keep=s=>{const pre=meanThr(s,1,j0),dur=ON.map(([a,b])=>meanThr(s,a,b)).filter(v=>v!=null);if(pre==null||!dur.length||pre<=0)return'–';const v=100*dur.reduce((x,v)=>x+v,0)/dur.length/pre;return v>100?'≥100 %':v.toFixed(0)+' %'};
  const an=anchorSegs(),last=an.length?an[an.length-1][2]:null,anTxt={bad:'jammed',ok:'verified',test:'testing'}[last]||(R.scenario.startsWith('B')?'not checked':'healthy');
  const k=[['run',R.name.split('/').slice(-2).join('/')],['scenario',R.scenario],['policy',R.policy_name],['jammer',(R.power!=null&&!isNaN(R.power)?R.power+' dBm':'–')+(ON.length>1?' · '+ON.length+' episodes':'')],
   ['detection',d?((d.t-j0)*1000).toFixed(0)+' ms':'–',d?'ok':''],['alarms / false',dets.length+' / '+fa,fa?'warn':''],['actions',act],
