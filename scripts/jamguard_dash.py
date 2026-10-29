@@ -366,7 +366,8 @@ function mapChart(){const c=$('cMap'),[g,W,H]=prep(c),t=+$('tsl').value;$('tslv'
  g.fillStyle=on?'#ff5c7a':css('--mut');g.beginPath();g.moveTo(X(jx),Y(jy)-9);g.lineTo(X(jx)+8,Y(jy)+6);g.lineTo(X(jx)-8,Y(jy)+6);g.fill();g.font='11px system-ui';g.fillText('jammer'+(R.scenario.startsWith('B')?' (NR+LTE)':''),X(jx)+10,Y(jy)+4);
  const st=laneState(t);for(const k in P){if(P[k].x==null)continue;const u=R.ues[k],sl=u?SN[u.slice]||'eMBB':'eMBB';g.fillStyle=SC[sl];g.beginPath();g.arc(X(P[k].x),Y(P[k].y),6,0,7);g.fill();
   if(st[k]=='LTE'){g.strokeStyle=anchorAt(t)=='bad'?css('--bad'):css('--lte');g.lineWidth=2.5;g.stroke();g.lineWidth=1}g.fillStyle=css('--fg');if(Object.keys(P).length<=15||(u&&u.slice>0)||st[k]=='LTE')g.fillText('UE'+k+(st[k]?' '+st[k]:''),X(P[k].x)+8,Y(P[k].y)-6)}}
-function laneState(t){const s={};for(const k in R.pos)s[k]='c'+R.pos[k].cell;for(const e of R.events){if(e.t>t)break;if(e.imsi<=0)continue;
+function initCell(im){const q=R.pos[im];if(q&&q.cell>0)return 'c'+q.cell;const e=R.events.find(e=>e.imsi==im&&e.from>0);return e?(e.from==1?'LTE':'c'+e.from):'NR'}
+function laneState(t){const s={};for(const k in R.ues)s[k]=initCell(+k);for(const e of R.events){if(e.t>t)break;if(e.imsi<=0)continue;
  if(e.ev=='EVAC_LTE'||e.ev=='PROBE_FAIL')s[e.imsi]='LTE';else if(['HO_NR','PROBE','RETURN'].includes(e.ev))s[e.imsi]='c'+e.to}return s}
 /* LTE-anchor state over time: unverified while a canary test runs, bad after ANCHOR_BAD, ok after ANCHOR_OK */
 function anchorSegs(){const seg=[];let cur=null,t0=0;const has=R.events.some(e=>e.ev.startsWith('ANCHOR')||/canary/.test(e.note));if(!has)return seg;
@@ -380,11 +381,11 @@ function laneChart(){const c=$('cLane');{const n=Object.keys(R.ues).length,h=Mat
  const segs=anchorSegs();if(!segs.length){g.fillText(R.scenario.startsWith('B')?'(no guard in this run)':'(healthy, not monitored)',X(0)+4,13)}
  for(const[a,b,v]of segs){g.fillStyle=AC[v];g.globalAlpha=.85;g.fillRect(X(a),4,Math.max(X(b)-X(a),2),11);g.globalAlpha=1}
  ids.forEach((im,i)=>{const y=T+i*lh,sl=SN[R.ues[im].slice]||'eMBB';g.fillStyle=SC[sl];g.fillText('UE'+im+' '+sl.slice(0,4),4,y+lh/2+4);
-  let cur=R.pos[im]?'c'+R.pos[im].cell:'c?',t0=0;const sg=[];for(const e of R.events){if(e.imsi!=im)continue;let nx=null;
-   if(e.ev=='EVAC_LTE'||e.ev=='PROBE_FAIL')nx='LTE';else if(['HO_NR','PROBE','RETURN'].includes(e.ev))nx='c'+e.to;if(nx){sg.push([t0,e.t,cur]);t0=e.t;cur=nx}}
+  let cur=initCell(im),t0=0;const sg=[];for(const e of R.events){if(e.imsi!=im)continue;let nx=null;
+   if(e.ev=='EVAC_LTE'||e.ev=='PROBE_FAIL')nx='LTE';else if(['HO_NR','PROBE','RETURN'].includes(e.ev))nx='c'+e.to;if(nx&&nx!==cur){sg.push([t0,e.t,cur]);t0=e.t;cur=nx}}
   sg.push([t0,tm,cur]);for(const[a,b,s]of sg){g.fillStyle=s=='LTE'?css('--lte'):'#4ea1ff';g.globalAlpha=s=='LTE'?.85:.35;g.fillRect(X(a),y+1,Math.max(X(b)-X(a),1),Math.max(lh-2,1));g.globalAlpha=1;
    if(X(b)-X(a)>26&&lh>11){g.fillStyle=css('--fg');g.fillText(s,X(a)+3,y+lh/2+4)}}
-  for(const e of R.events)if(e.imsi==im&&e.ev!='LOCALIZE'){g.fillStyle=e.ev=='EVAC_LTE'&&/canary/.test(e.note)?css('--warn'):css('--fg');g.fillRect(X(e.t)-1,y+1,2,Math.max(lh-2,1))}});
+  sg.forEach(([a,b,v],k)=>{if(!k)return;const e=R.events.find(e=>e.imsi==im&&Math.abs(e.t-a)<1e-9);g.fillStyle=e&&e.ev=='EVAC_LTE'&&/canary/.test(e.note)?css('--warn'):css('--fg');g.fillRect(X(a)-1,y+1,2,Math.max(lh-2,1))})});
  g.fillStyle=css('--mut');const st=tm>30?10:2;for(let t=0;t<=tm;t+=st)g.fillText(t+'s',X(t)-6,H-6)}
 function meanThr(s,a,b){const v=(R.slices[s]||[]).filter(p=>p[0]>a&&p[0]<=b);return v.length?v.reduce((x,p)=>x+p[1],0)/v.length:null}
 function kpis(){const ev=R.events,j0=ON[0][0],j1=ON[ON.length-1][1];
