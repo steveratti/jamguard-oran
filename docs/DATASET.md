@@ -12,7 +12,7 @@ Archives larger than 2 GB are split (`*.part_00`, `*.part_01`): join with `cat f
 | jamguard_A3.tar.gz | Mobility cost (A3 baseline) | plain A3 handover, jammer-unaware | 5 | 23M |
 | jamguard_N.tar.gz | Detection (attack-free set) | jammer attenuated to -100 dBm, 20 s, 5 runs | 5 | 33M |
 | jamguard_D5.tar.gz | Detection vs. spatial clustering (tab:prior), keyed jammer | held-out set: pos40, pos50, neg (attack-free), keyed40, keyed50 | 90 | 386M |
-| jamguard_LA.tar.gz | When the escape route is jammed (tab:anchor), Scenario A | NR jammed only; p0 p4 p8 p9, 15 seeds | 30 | 137M |
+| jamguard_LA.tar.gz | When the escape route is jammed (tab:anchor), Scenario A | NR jammed only; p8 p9, 15 seeds (Scenario A p0 and p4: campaigns F and F2) | 30 | 137M |
 | jamguard_LJ.tar.gz | When the escape route is jammed (tab:anchor), Scenario B | NR and LTE anchor jammed; p0 p4 p8 p9, 15 seeds | 60 | 270M |
 | jamguard_N20.tar.gz | Scaling (tab:scale) | 20 UEs, Scenario A (LA) and B (LJ), 5 seeds | 25 | 228M |
 | jamguard_N40.tar.gz | Scaling (tab:scale) | 40 UEs, Scenario A (LA) and B (LJ), 3 seeds | 15 | 269M |
