@@ -5,6 +5,8 @@ Localization, and Mitigation in O-RAN* (ns-O-RAN + FlexRIC). One archive per cam
 folder named after its configuration, e.g. `pw50_p4_s3` = jammer EIRP 50 dBm, policy p4, seed 3.
 Archives larger than 2 GB are split (`*.part_00`, `*.part_01`): join with `cat f.part_* > f`.
 
+Total size: 4.6 GB in 22 compressed archives (heavy PHY/HARQ/RLC/X2 traces that no analysis uses are left out).
+
 | Archive | Paper section / table | Content | Runs | Size |
 |---|---|---|---|---|
 | jamguard_F.tar.gz | Main results (Table: jamming window), detection (tab:roc), localization (tab:loc), churn | 10 UEs, 40/50 dBm, policies p0 p1 p2 p4 p5(B2) p6(B1), seeds 1-5 (p1, p2 up to 15) | 80 | 359M |

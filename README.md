@@ -11,7 +11,7 @@ running on FlexRIC and ns-O-RAN (ns-3 mmWave, EN-DC).
 | `scripts/` | campaign runner, live launcher, analysis and statistics |
 | `results/` | campaign summaries and live-run logs |
 
-Raw simulation output of every campaign in the paper is published as the GitHub release [dataset-v1](https://github.com/steveratti/jamguard-oran/releases/tag/dataset-v1) (one archive per campaign, SHA-256 checksums); [docs/DATASET.md](docs/DATASET.md) maps each archive to the section and table of the paper.
+Raw simulation output of every campaign in the paper is published as the GitHub release [dataset-v1](https://github.com/steveratti/jamguard-oran/releases/tag/dataset-v1) (one archive per campaign, 4.6 GB in total, SHA-256 checksums); [docs/DATASET.md](docs/DATASET.md) maps each archive to the section and table of the paper.
 Licensing: see `docs/LICENSING.md`. The ns-3 parts are GPLv2 like the files they modify;
 the xApp is subject to FlexRIC's licence terms.
 
