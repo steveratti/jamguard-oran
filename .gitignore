@@ -4,3 +4,10 @@ build/
 __pycache__/
 *.pyc
 *.bak*
+*.orig
+*.rej
+*.pre_*
+*~
+*.swp
+core
+core.*
