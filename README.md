@@ -11,9 +11,15 @@ running on FlexRIC and ns-O-RAN (ns-3 mmWave, EN-DC).
 | `scripts/` | campaign runner, live launcher, analysis and statistics |
 | `results/` | campaign summaries and live-run logs |
 
-Raw simulation output is archived separately (Zenodo, DOI to be added).
+Raw simulation output of every campaign in the paper is published as the GitHub release [dataset-v1](https://github.com/steveratti/jamguard-oran/releases/tag/dataset-v1) (one archive per campaign, SHA-256 checksums); [docs/DATASET.md](docs/DATASET.md) maps each archive to the section and table of the paper.
 Licensing: see `docs/LICENSING.md`. The ns-3 parts are GPLv2 like the files they modify;
 the xApp is subject to FlexRIC's licence terms.
+
+
+## Paper
+S. A. Ratti, A. Piccioni, W. Tiberti, C. Centofanti, F. Graziosi, D. Cassioli, A. Marotta, "JamGuard: A Slice-Aware Closed-Loop xApp for Jamming Detection, Localization, and Mitigation in O-RAN", submitted to IEEE Access, 2026.
+
+Previous work (jammer detection and geolocation, offline): S. A. Ratti et al., "An O-RAN-Native xApp Framework for Jammer Detection and Geolocation", Sensors (MDPI), accepted 27 Oct. 2026 - dataset and code: https://github.com/steveratti/oran-jammer-detection-geolocation-dataset
 
 ## Dashboard
 
