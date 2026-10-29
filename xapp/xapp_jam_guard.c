@@ -1230,6 +1230,8 @@ typedef struct {
   double rsrp; long rsrp_r;                       /* JGTRI serving RSRP-like power [dBm]   */
   double nb_rsrp[16]; long nb_rsrp_r[16];         /* JGTRI2 neighbour RSRP per cell [dBm]  */
   double wj[16]; int wn; double wx, wy;           /* JGTRI current 1-s window              */
+  double lte_rlc, pdcp_tx, c_rlc, c_pdcp; long thp_r; /* JGCANARYX anchor delivery [kbit/s] */
+  int c_n, c_dly; long dly_r; /* JGCANDLY reports with a PDCP-delay item / with delivery */
 } jg_ue_t;
 
 typedef struct { int imsi, from, to; } jg_act_t;
@@ -1319,6 +1321,11 @@ static void jg_cadd(int kind, int cell, int slice, double val)
 static int jg_alarm = 0, jg_alarm_cnt = 0, jg_quiet = 0, jg_have_est = 0, jg_returning = 0, jg_probe = -1;
 static double jg_ex = 0, jg_ey = 0, jg_er = 0;
 static long jg_hold = 20, jg_next_probe = 0;
+/* JGCANARYX: anchor-health guard and canary test */
+static int P_CANARY = 0, P_CAN_W = 8, P_ANC_HOLD = 50;
+static double P_ANC_TH = 0.5, P_ANC_Q = 0.2;
+static int jg_anc_bad = 0, jg_anc_ok = 0, jg_canary = -1;
+static long jg_anc_until = 0, jg_anc_hold = 50;
 
 static double jg_envd(const char* k, double d) { const char* v = getenv(k); return v ? atof(v) : d; }
 static double jg_clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -1368,6 +1375,10 @@ static void jg_params(void)
   P_MLINK = (int)jg_envd("JG_MLINK", P_MLINK); P_LOC = (int)jg_envd("JG_LOC", P_LOC);
   P_PP = (int)jg_envd("JG_PP_HOLD", P_PP);   P_PASSIVE = (int)jg_envd("JG_PASSIVE", P_PASSIVE);
   P_PASS_N = (int)jg_envd("JG_PASS_N", P_PASS_N); P_PASS_MARGIN = jg_envd("JG_PASS_MARGIN", P_PASS_MARGIN);
+  P_CANARY = (int)jg_envd("JG_CANARY", P_CANARY); P_CAN_W = (int)jg_envd("JG_CANARY_W", P_CAN_W); /* JGCANARYX */
+  P_ANC_TH = jg_envd("JG_ANCHOR_TH", P_ANC_TH); P_ANC_Q = jg_envd("JG_ANCHOR_Q", P_ANC_Q);
+  P_ANC_HOLD = (int)jg_envd("JG_ANCHOR_HOLD", P_ANC_HOLD); jg_anc_hold = P_ANC_HOLD;
+  printf("[JamGuard] canary=%d window=%d th=%.2f q=%.2f hold=%d\n", P_CANARY, P_CAN_W, P_ANC_TH, P_ANC_Q, P_ANC_HOLD);
   P_NOISE_DBM = jg_envd("JG_NOISE_DBM", P_NOISE_DBM); P_INR_DB = jg_envd("JG_INR_DB", P_INR_DB);  /* JGTRI */
   P_LOC_WIN = (int)jg_envd("JG_LOC_WIN", P_LOC_WIN);
   P_TRI_MIN = (int)jg_envd("JG_TRI_MIN", P_TRI_MIN); P_TRI_LTE = (int)jg_envd("JG_TRI_LTE", P_TRI_LTE); /* JGTRI2 */
@@ -1515,6 +1526,17 @@ static void jg_on_kpm(int node, sm_ag_if_rd_t const* rd)
                  imsi < JG_MAX_UE && cell > 0 && cell < 16) {  /* JGTRI2 */
         jg_ue[imsi].nb_rsrp[cell] = jg_rec(&dl->meas_record_lst[0]);
         jg_ue[imsi].nb_rsrp_r[cell] = r;
+      } else if (sscanf(nm, "JGPdcpDly_UEID_%d", &imsi) == 1 && imsi > 0 && imsi < JG_MAX_UE) {  /* JGCANDLY */
+        jg_ue_t* u = &jg_ue[imsi];
+        double const v = jg_rec(&dl->meas_record_lst[0]);
+        if (u->state == JG_LTE && r - u->t_evac >= 3 && u->dly_r != r) { u->dly_r = r; u->c_n++; if (v > 0) u->c_dly++; }
+      } else if ((sscanf(nm, "JGLteRlcDl_UEID_%d", &imsi) == 1 || sscanf(nm, "JGPdcpTxDl_UEID_%d", &imsi) == 1) &&
+                 imsi > 0 && imsi < JG_MAX_UE) {  /* JGCANARYX: ns-O-RAN KPM extension (patch_thp_kpm.py) */
+        jg_ue_t* u = &jg_ue[imsi];
+        double const v = jg_rec(&dl->meas_record_lst[0]);
+        if (nm[2] == 'L') u->lte_rlc = v; else u->pdcp_tx = v;
+        u->thp_r = r;
+        if (u->state == JG_LTE && r - u->t_evac >= 3) { if (nm[2] == 'L') u->c_rlc += v; else u->c_pdcp += v; }
       } else if (sscanf(nm, "L3neighSINRListOf_UEID_%d_of_Cell_%d", &imsi, &cell) == 2 && imsi > 0 &&
                  imsi < JG_MAX_UE) {
         jg_ue_t* u = &jg_ue[imsi];
@@ -1608,7 +1630,7 @@ static void jg_slice_step(long r)
           jg_ue[i].cell > 0 && jg_ue[i].cell < JG_MAX_CELL) want[jg_ue[i].cell] = 1;
   for (int c = 1; c < JG_MAX_CELL; c++) {
     if (!jg_cell_seen[c]) continue;
-    double const q = want[c] ? P_EMBB_Q : 1.0;
+    double const q = want[c] ? ((P_CANARY && jg_anc_bad) ? P_ANC_Q : P_EMBB_Q) : 1.0; /* JGCANARYX */
     if (q == jg_cap_now[c]) continue;
     jg_cap_now[c] = q;
     char nt[64];
@@ -1750,6 +1772,8 @@ static void jg_evac(long r, int i, jg_act_t* a, int* na, const char* why)
   u->jam_w = jg_clamp(u->base - u->sinr, 1, 40);
   u->state = JG_LTE;
   u->t_evac = r;
+  u->c_rlc = 0; u->c_pdcp = 0; /* JGCANARYX */
+  u->c_n = 0; u->c_dly = 0; u->dly_r = -1; /* JGCANDLY */
   u->cool_until = r + P_COOL;
   u->deg_cnt = 0;
   if (jg_probe < 0 && jg_next_probe <= r) jg_next_probe = r + jg_hold;
@@ -1816,6 +1840,7 @@ static void jg_step(long r, jg_act_t* a, int* na)
   if (!jg_alarm && jg_alarm_cnt >= P_P) {
     jg_alarm = 1; jg_quiet = 0; jg_lsw = jg_lsx = jg_lsy = 0; /* JGV3 */
     jg_tn = 0; jg_tri_ok = 0; jg_twin = 0; for (int q = 1; q < JG_MAX_UE; q++) jg_ue[q].wn = 0; /* JGTRI */
+    jg_anc_ok = 0; jg_canary = -1; /* JGCANARYX: new episode, anchor unverified */
     snprintf(nt, sizeof nt, "%d degraded UEs", n_deg);
     jg_logev(r, "DETECT", 0, 0, 0, nt);
   }
@@ -1851,7 +1876,7 @@ static void jg_step(long r, jg_act_t* a, int* na)
       }
       double ex, ey;
       int const m = jg_trilat(&ex, &ey);
-      printf("[JGTRI] win %d obs %d ues %d\n", jg_twin, m, jg_tri_nue); fflush(stdout); /* JGTRIU */
+      printf("[JGTRI] win %ld obs %d ues %d\n", jg_twin, m, jg_tri_nue); fflush(stdout); /* JGTRIU */
       if (m >= P_TRI_MIN && jg_tri_nue >= P_TRI_UMIN) {  /* JGTRIU */  /* JGTRI2: fewer observations than unknowns -> keep the centroid */
         /* zone radius: 80th percentile of the distances of the current victim UEs, at least R_min */
         double dd[JG_MAX_UE], ww[JG_MAX_UE]; int nv = 0;
@@ -1965,6 +1990,43 @@ static void jg_step(long r, jg_act_t* a, int* na)
     return;
   }
 
+  /* JGCANARYX: verdict on the canary, guard state, return of UEs from a jammed anchor */
+  if (P_CANARY) {
+    if (jg_canary > 0) {
+      jg_ue_t* c = &jg_ue[jg_canary];
+      if (c->state != JG_LTE) jg_canary = -1;
+      else if (r - c->t_evac >= P_CAN_W) {
+        /* JGCANDLY: fraction of reports in which the anchor delivered to the canary; no evidence = BAD */
+        double const ratio = c->c_n > 0 ? (double)c->c_dly / c->c_n : 0.0;
+        if (ratio < P_ANC_TH) {
+          jg_anc_bad = 1; jg_anc_until = r + jg_anc_hold;
+          snprintf(nt, sizeof nt, "canary UE %d: delivered in %d of %d reports%s, hold %ld", jg_canary, c->c_dly, c->c_n,
+                   c->c_n ? "" : " (no PDCP-delay item: unverified)", jg_anc_hold); /* JGCANDLY */
+          jg_logev(r, "ANCHOR_BAD", 0, P_LTE_CELL, P_LTE_CELL, nt);
+          jg_anc_hold = (2 * jg_anc_hold > 8 * P_ANC_HOLD) ? 8 * P_ANC_HOLD : 2 * jg_anc_hold;
+        } else {
+          jg_anc_ok = 1;
+          snprintf(nt, sizeof nt, "canary UE %d: delivered in %d of %d reports", jg_canary, c->c_dly, c->c_n); /* JGCANDLY */
+          jg_logev(r, "ANCHOR_OK", 0, P_LTE_CELL, P_LTE_CELL, nt);
+        }
+        jg_canary = -1;
+      }
+    }
+    if (jg_anc_bad && r >= jg_anc_until) {
+      jg_anc_bad = 0;
+      jg_logev(r, "ANCHOR_RETRY", 0, P_LTE_CELL, P_LTE_CELL, "anchor hold expired, canary test again");
+    }
+    if (jg_anc_bad)
+      for (int i = 1; i < JG_MAX_UE; i++) {
+        jg_ue_t* v = &jg_ue[i];
+        if (v->state != JG_LTE || v->cool_until > r || v->last_nr_cell <= 0) continue;
+        v->state = JG_NR; v->deg_cnt = 0; v->cool_until = r + P_COOL; v->eval = v->upd;
+        jg_add(a, na, i, P_LTE_CELL, v->last_nr_cell);
+        jg_logev(r, "RETURN", i, P_LTE_CELL, v->last_nr_cell, "anchor jammed, back to NR");
+        n_lte--;
+      }
+  }
+
   /* 4. mitigation */
   for (int i = 1; i < JG_MAX_UE; i++) {
     jg_ue_t* u = &jg_ue[i];
@@ -2008,6 +2070,34 @@ static void jg_step(long r, jg_act_t* a, int* na)
         jg_logev(r, "HO_NR", i, u->cell, best, nt);
       } else
         jg_logev(r, "HOLD_NR", i, u->cell, u->cell, "eMBB, LTE anchor reserved for critical slices");
+    } else if (P_CANARY && (jg_anc_bad || !jg_anc_ok)) {  /* JGCANARYX */
+      int evacuated = 0;
+      if (!jg_anc_bad && jg_canary < 0) {
+        int c = (jg_sl(i) == 0) ? i : -1;
+        if (c < 0) {  /* only a critical UE is degraded: test the anchor with the eMBB UE of lowest SINR */
+          double cs = 1e9;
+          for (int q = 1; q < JG_MAX_UE; q++) {
+            jg_ue_t const* w = &jg_ue[q];
+            if (!w->known || w->state != JG_NR || jg_sl(q) != 0 || !jg_fresh(w, r) || w->cool_until > r) continue;
+            if (w->sinr < cs) { cs = w->sinr; c = q; }
+          }
+        }
+        if (c > 0) {
+          jg_evac(r, c, a, na, c == i ? "canary: eMBB UE tests the anchor" : "canary: anchor tested before critical UEs");
+          n_lte++; jg_canary = c; evacuated = (c == i);
+        }
+      }
+      if (!evacuated) {
+        u->cool_until = r + (jg_anc_bad ? P_COOL : 3);
+        if (best && bs >= u->sinr + P_HYST) {
+          u->deg_cnt = 0;
+          u->prev_cell = u->cell; u->ho_round = r;
+          jg_add(a, na, i, u->cell, best);
+          snprintf(nt, sizeof nt, "%s, anchor %s, least-degraded NR %.1f dB", why, jg_anc_bad ? "jammed" : "unverified", bs);
+          jg_logev(r, "HO_NR", i, u->cell, best, nt);
+        } else
+          jg_logev(r, "HOLD_NR", i, u->cell, u->cell, jg_anc_bad ? "anchor jammed, no better NR cell" : "anchor unverified, kept on NR");
+      }
     } else {
       jg_evac(r, i, a, na, why);
       n_lte++;

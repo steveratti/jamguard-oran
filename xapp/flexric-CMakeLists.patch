@@ -1,0 +1,34 @@
+diff --git a/examples/xApp/c/orange/CMakeLists.txt b/examples/xApp/c/orange/CMakeLists.txt
+index c463d411..2b343239 100644
+--- a/examples/xApp/c/orange/CMakeLists.txt
++++ b/examples/xApp/c/orange/CMakeLists.txt
+@@ -58,3 +58,29 @@ target_link_libraries(xapp_kpm_rc_Enhanced
+                       -ldl
+                       )
+ target_compile_definitions(xapp_kpm_rc_Enhanced PRIVATE KPM_MEAS_LIST="${KPM_MEAS_LIST_ENHANCED}")
++
++add_executable(xapp_manual_ho
++    xapp_manual_ho.c
++    ../../../../src/util/alg_ds/alg/defer.c
++)
++
++target_link_libraries(xapp_manual_ho
++    PUBLIC
++    e42_xapp
++    pthread
++    sctp
++    dl
++)
++
++# JamGuard xApp
++add_executable(xapp_jam_guard
++    xapp_jam_guard.c
++    ../../../../src/util/alg_ds/alg/defer.c
++)
++target_link_libraries(xapp_jam_guard
++    PUBLIC
++    e42_xapp
++    pthread
++    sctp
++    dl
++)

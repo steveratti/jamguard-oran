@@ -1,0 +1,1452 @@
+diff --git a/src/applications/model/packet-sink.cc b/src/applications/model/packet-sink.cc
+index f1525fb9..d73aebe1 100644
+--- a/src/applications/model/packet-sink.cc
++++ b/src/applications/model/packet-sink.cc
+@@ -1,3 +1,4 @@
++#include <iostream>
+ /*
+  * Copyright 2007 University of Washington
+  *
+@@ -267,9 +268,38 @@ PacketSink::PacketReceived(const Ptr<Packet>& p, const Address& from, const Addr
+     buffer->AddAtEnd(p);
+     buffer->PeekHeader(header);
+ 
+-    NS_ABORT_IF(header.GetSize() == 0);
++    /* JamGuard fix: NS_ABORT_IF is compiled out in optimized builds. A misaligned
++       byte stream (UDP loss, or a corrupted SDU around an LTE<->NR data-path switch)
++       gives header.GetSize()==0 and the while loop below never ends (simulation hangs).
++       Resynchronise on the new packet instead, or drop the stale bytes. */
++    if (header.GetSize() < header.GetSerializedSize() || header.GetSize() > 65535)
++    {
++        static uint64_t s_jgResync = 0;
++        if (++s_jgResync <= 5 || s_jgResync % 1000 == 0)
++        {
++            std::cout << Simulator::Now().GetSeconds() << " s PacketSink resync #" << s_jgResync
++                      << " (bad SeqTsSize header, size " << header.GetSize() << ")" << std::endl;
++        }
++        Ptr<Packet> fresh = p->Copy();
++        SeqTsSizeHeader h2;
++        if (fresh->GetSize() >= h2.GetSerializedSize())
++        {
++            fresh->PeekHeader(h2);
++        }
++        if (h2.GetSize() >= h2.GetSerializedSize() && h2.GetSize() <= fresh->GetSize())
++        {
++            itBuffer->second = fresh;
++            buffer = fresh;
++            header = h2;
++        }
++        else
++        {
++            itBuffer->second = Create<Packet>(0);
++            return;
++        }
++    }
+ 
+-    while (buffer->GetSize() >= header.GetSize())
++    while (header.GetSize() >= header.GetSerializedSize() && buffer->GetSize() >= header.GetSize())
+     {
+         NS_LOG_DEBUG("Removing packet of size " << header.GetSize() << " from buffer of size "
+                                                 << buffer->GetSize());
+diff --git a/src/lte/model/lte-enb-net-device.cc b/src/lte/model/lte-enb-net-device.cc
+index 0e458c41..7fe95774 100644
+--- a/src/lte/model/lte-enb-net-device.cc
++++ b/src/lte/model/lte-enb-net-device.cc
+@@ -1,3 +1,4 @@
++#include <cstdlib> // JGTHP
+ /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+ /*
+  * Copyright (c) 2010 TELEMATICS LAB, DEE - Politecnico di Bari
+@@ -148,10 +149,34 @@ LteEnbNetDevice::ReadControlFile ()
+               NS_LOG_INFO ("Handover command for timestamp " << timestamp << " imsi " << imsi
+                                                              << " targetCellId " << targetCellId);
+ 
+-              m_rrc->TakeUeHoControl (imsi);
+-              Simulator::ScheduleWithContext (1, Seconds (0),
+-                                              &LteEnbRrc::PerformHandoverToTargetCell, m_rrc, imsi,
+-                                              targetCellId);
++              // XAPP PATCH: a timestamp below 1e9 is the simulation time [ms] at which the command is
++              // applied (models the RIC control-loop delay); larger (wall-clock) values: at once.
++              // targetCellId 0: move the UE data path to LTE (xApp takes control of the UE);
++              // 1: move it back to NR and return control to the RAN; >= 2: NR secondary-cell HO.
++              Time at = Seconds (0);
++              if (timestamp > 0 && timestamp < 1000000000LL)
++                {
++                  at = MilliSeconds (timestamp) - Simulator::Now ();
++                  if (at.IsNegative ())
++                    {
++                      at = Seconds (0);
++                    }
++                }
++              if (targetCellId == 0 || targetCellId == 1)
++                {
++                  if (targetCellId == 0)
++                    {
++                      m_rrc->TakeUeHoControl (imsi);
++                    }
++                  Simulator::ScheduleWithContext (1, at, &LteEnbRrc::ForceConnectionSwitch, m_rrc,
++                                                  imsi, targetCellId == 1);
++                }
++              else
++                {
++                  m_rrc->TakeUeHoControl (imsi);
++                  Simulator::ScheduleWithContext (1, at, &LteEnbRrc::PerformHandoverToTargetCell,
++                                                  m_rrc, imsi, targetCellId);
++                }
+             }
+         }
+       else
+@@ -858,6 +883,14 @@ LteEnbNetDevice::BuildRicIndicationMessageCuUp (std::string plmId)
+       perUserAverageLatencySum += pdcpLatency;
+ 
+       double pdcpThroughput = txBytes / m_e2Periodicity; // unit kbps
++      /* JGTHP: LTE-anchor delivery of this UE, named with the UE (JG_THP_KPM set) */
++      static const bool jgThpKpm = std::getenv ("JG_THP_KPM") != nullptr;
++      if (jgThpKpm && !indicationMessageHelper->IsOffline ())
++        {
++          indicationMessageHelper->JgAddUeExtra (ueImsiComplete, "JGLteRlcDl_UEID_" + std::to_string (imsi),
++                                                 txPdcpPduBytesLteRlc / m_e2Periodicity);
++          indicationMessageHelper->JgAddUeExtra (ueImsiComplete, "JGPdcpDly_UEID_" + std::to_string (imsi), pdcpLatency);
++        }
+ 
+       NS_LOG_DEBUG (Simulator::Now ().GetSeconds ()
+                     << " " << std::to_string (m_cellId) << " cell, connected UE with IMSI " << imsi
+diff --git a/src/lte/model/lte-enb-rrc.cc b/src/lte/model/lte-enb-rrc.cc
+index 4ee8c4bb..ce203f86 100644
+--- a/src/lte/model/lte-enb-rrc.cc
++++ b/src/lte/model/lte-enb-rrc.cc
+@@ -1,3 +1,4 @@
++#include <ns3/slice-registry.h>
+ /* -*-  Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil; -*- */
+ /*
+  * Copyright (c) 2011 Centre Tecnologic de Telecomunicacions de Catalunya (CTTC)
+@@ -4068,6 +4069,30 @@ LteEnbRrc::PerformHandover(uint64_t imsi)
+   m_imsiHandoverEventsMap.erase(m_imsiHandoverEventsMap.find(imsi));
+ }
+ 
++// XAPP PATCH (E2)
++bool
++LteEnbRrc::XappIsUsingLte (uint64_t imsi) const
++{
++  auto it = m_imsiUsingLte.find (imsi);
++  return it != m_imsiUsingLte.end () && it->second;
++}
++
++uint16_t
++LteEnbRrc::XappLastMmWaveCell (uint64_t imsi) const
++{
++  auto it = m_lastMmWaveCell.find (imsi);
++  return it == m_lastMmWaveCell.end () ? 0 : it->second;
++}
++
++void
++LteEnbRrc::XappReleaseControl (uint64_t imsi)
++{
++  if (!XappIsUsingLte (imsi))
++    {
++      m_e2ControlledUes.erase (imsi);
++    }
++}
++
+ void
+ LteEnbRrc::TakeUeHoControl (uint64_t imsi)
+ {
+@@ -4076,6 +4101,35 @@ LteEnbRrc::TakeUeHoControl (uint64_t imsi)
+   m_e2ControlledUes.insert (imsi);
+ }
+ 
++void
++LteEnbRrc::ForceConnectionSwitch (uint64_t imsi, bool useMmWave)
++{
++  // XAPP PATCH: same switch as the RAN's outage handling, triggered by an external controller
++  if (m_mmWaveCellSetupCompleted.find (imsi) == m_mmWaveCellSetupCompleted.end ())
++    {
++      std::cout << "xApp switch ignored: UE " << imsi << " not associated yet" << std::endl;
++      return;
++    }
++  if (m_imsiUsingLte[imsi] != !useMmWave)
++    {
++      Ptr<UeManager> ueMan = GetUeManager (GetRntiFromImsi (imsi));
++      m_imsiUsingLte[imsi] = !useMmWave;
++      ueMan->SendRrcConnectionSwitch (useMmWave);
++      HandoverEventMap::iterator ev = m_imsiHandoverEventsMap.find (imsi);
++      if (ev != m_imsiHandoverEventsMap.end ())
++        {
++          ev->second.scheduledHandoverEvent.Cancel ();
++          m_imsiHandoverEventsMap.erase (ev);
++        }
++      std::cout << Simulator::Now ().GetSeconds () << " s xApp: UE " << imsi << " data path to "
++                                                      << (useMmWave ? "NR" : "LTE") << std::endl;
++    }
++  if (useMmWave)
++    {
++      m_e2ControlledUes.erase (imsi); // back to the RAN's own mobility management
++    }
++}
++
+ void
+ LteEnbRrc::PerformE2RCHO (uint64_t imsi, uint16_t targetCellId)
+ {
+diff --git a/src/lte/model/lte-enb-rrc.h b/src/lte/model/lte-enb-rrc.h
+index b5ebbb89..a81d7b77 100644
+--- a/src/lte/model/lte-enb-rrc.h
++++ b/src/lte/model/lte-enb-rrc.h
+@@ -1598,6 +1598,14 @@ class LteEnbRrc : public Object
+     void SetCsgId(uint32_t csgId, bool csgIndication);
+ 
+      void TakeUeHoControl (uint64_t imsi);
++  /// XAPP PATCH: move the data path of a UE to LTE (useMmWave false) or back to NR (true; the
++  /// UE is then released to the RAN's own mobility management)
++  void ForceConnectionSwitch (uint64_t imsi, bool useMmWave);
++  // XAPP PATCH (E2): state queries and control release for the JamGuard xApp
++  bool XappIsUsingLte (uint64_t imsi) const;
++    const std::map<uint64_t, CellSinrMap>& XappGetImsiCellSinrMap () const { return m_imsiCellSinrMap; }
++  uint16_t XappLastMmWaveCell (uint64_t imsi) const;
++  void XappReleaseControl (uint64_t imsi);
+   
+   /**
+    * Triggers an handover between secondary cells
+diff --git a/src/lte/model/lte-rlc-um-lowlat.cc b/src/lte/model/lte-rlc-um-lowlat.cc
+index e28f29bd..fec21a20 100644
+--- a/src/lte/model/lte-rlc-um-lowlat.cc
++++ b/src/lte/model/lte-rlc-um-lowlat.cc
+@@ -28,6 +28,8 @@
+  *                 Integration of Carrier Aggregation for the mmWave module
+  */
+ 
++#include "ns3/global-value.h"
++#include "ns3/uinteger.h"
+ #include "lte-rlc-um-lowlat.h"
+ 
+ #include "ns3/log.h"
+@@ -39,6 +41,12 @@
+ namespace ns3
+ {
+ 
++
++static GlobalValue g_rlcRxSyncOnFirstPdu("rlcRxSyncOnFirstPdu",
++                                         "1: RLC UM RX state synchronised on the first PDU (JamGuard fix of the LTE->NR switch interruption)",
++                                         UintegerValue(0),
++                                         MakeUintegerChecker<uint32_t>());
++
+ NS_LOG_COMPONENT_DEFINE("LteRlcUmLowLat");
+ 
+ NS_OBJECT_ENSURE_REGISTERED(LteRlcUmLowLat);
+@@ -503,6 +511,30 @@ LteRlcUmLowLat::DoReceivePdu(LteMacSapUser::ReceivePduParameters rxPduParams)
+     NS_LOG_LOGIC("RLC header: " << rlcHeader);
+     SequenceNumber10 seqNumber = rlcHeader.GetSequenceNumber();
+ 
++    /* JamGuard fix (EN-DC data-path switch): when the UE moves a bearer from LTE back to NR it
++       creates a new RLC entity whose RX window starts at SN 0, while the gNB RLC keeps its
++       running SN. PDUs with SN in [512, 1023] are then discarded as "outside the window"
++       until the SN wraps, an interruption of up to 1024 PDUs. Synchronise the RX state on the
++       first PDU instead (no change at attach, where the first SN is 0).
++       Enabled with the global value rlcRxSyncOnFirstPdu=1. */
++    if (!m_rxSynced)
++    {
++        m_rxSynced = true;
++        static int s_fixOn = -1;
++        if (s_fixOn < 0)
++        {
++            UintegerValue v;
++            GlobalValue::GetValueByNameFailSafe("rlcRxSyncOnFirstPdu", v);
++            s_fixOn = (int)v.Get();
++        }
++        if (s_fixOn && seqNumber.GetValue() != 0)
++        {
++            m_vrUr = seqNumber;
++            m_vrUx = seqNumber;
++            m_vrUh = seqNumber;
++        }
++    }
++
+     // 5.1.2.2.1 General
+     // The receiving UM RLC entity shall maintain a reordering window according to state variable
+     // VR(UH) as follows:
+diff --git a/src/lte/model/lte-rlc-um-lowlat.h b/src/lte/model/lte-rlc-um-lowlat.h
+index 3ca6fa13..2ec013e3 100644
+--- a/src/lte/model/lte-rlc-um-lowlat.h
++++ b/src/lte/model/lte-rlc-um-lowlat.h
+@@ -104,6 +104,7 @@ private:
+   SequenceNumber10 m_vrUr;           // VR(UR)
+   SequenceNumber10 m_vrUx;           // VR(UX)
+   SequenceNumber10 m_vrUh;           // VR(UH)
++  bool m_rxSynced{false}; //!< JamGuard fix: RX window synchronised on the first PDU
+ 
+   /**
+    * Constants. See section 7.2 in TS 36.322
+diff --git a/src/lte/model/lte-rlc-um.cc b/src/lte/model/lte-rlc-um.cc
+index ecf06b55..5e3a0a55 100644
+--- a/src/lte/model/lte-rlc-um.cc
++++ b/src/lte/model/lte-rlc-um.cc
+@@ -22,6 +22,8 @@
+  *          Dual Connectivity functionalities
+  */
+ 
++#include "ns3/global-value.h"
++#include "ns3/uinteger.h"
+ #include "ns3/lte-rlc-um.h"
+ 
+ #include "ns3/log.h"
+@@ -470,6 +472,30 @@ LteRlcUm::DoReceivePdu(LteMacSapUser::ReceivePduParameters rxPduParams)
+     NS_LOG_LOGIC("RLC header: " << rlcHeader);
+     SequenceNumber10 seqNumber = rlcHeader.GetSequenceNumber();
+ 
++    /* JamGuard fix (EN-DC data-path switch): when the UE moves a bearer from LTE back to NR it
++       creates a new RLC entity whose RX window starts at SN 0, while the gNB RLC keeps its
++       running SN. PDUs with SN in [512, 1023] are then discarded as "outside the window"
++       until the SN wraps, an interruption of up to 1024 PDUs. Synchronise the RX state on the
++       first PDU instead (no change at attach, where the first SN is 0).
++       Enabled with the global value rlcRxSyncOnFirstPdu=1. */
++    if (!m_rxSynced)
++    {
++        m_rxSynced = true;
++        static int s_fixOn = -1;
++        if (s_fixOn < 0)
++        {
++            UintegerValue v;
++            GlobalValue::GetValueByNameFailSafe("rlcRxSyncOnFirstPdu", v);
++            s_fixOn = (int)v.Get();
++        }
++        if (s_fixOn && seqNumber.GetValue() != 0)
++        {
++            m_vrUr = seqNumber;
++            m_vrUx = seqNumber;
++            m_vrUh = seqNumber;
++        }
++    }
++
+     // 5.1.2.2.1 General
+     // The receiving UM RLC entity shall maintain a reordering window according to state variable
+     // VR(UH) as follows:
+diff --git a/src/lte/model/lte-rlc-um.h b/src/lte/model/lte-rlc-um.h
+index 8b03fd8b..fd8cbdb8 100644
+--- a/src/lte/model/lte-rlc-um.h
++++ b/src/lte/model/lte-rlc-um.h
+@@ -131,6 +131,7 @@ private:
+   SequenceNumber10 m_vrUr;           ///< VR(UR)
+   SequenceNumber10 m_vrUx;           ///< VR(UX)
+   SequenceNumber10 m_vrUh;           ///< VR(UH)
++  bool m_rxSynced{false}; //!< JamGuard fix: RX window synchronised on the first PDU
+ 
+   /**
+    * Constants. See section 7.2 in TS 36.322
+diff --git a/src/mmwave/helper/mmwave-helper.cc b/src/mmwave/helper/mmwave-helper.cc
+index 5e4507c1..5534b791 100644
+--- a/src/mmwave/helper/mmwave-helper.cc
++++ b/src/mmwave/helper/mmwave-helper.cc
+@@ -34,6 +34,7 @@
+ 
+ #include "mmwave-helper.h"
+ 
++#include <ns3/simulator.h>   // E2DUFIX
+ #include <ns3/abort.h>
+ #include <ns3/cc-helper.h>
+ #include <ns3/channel-condition-model.h>
+@@ -2222,6 +2223,17 @@ MmWaveHelper::InstallSingleEnbDevice(Ptr<Node> n)
+     device->SetAttribute("E2PdcpCalculator", PointerValue(m_e2PdcpStats));
+     device->SetAttribute("E2RlcCalculator", PointerValue(m_e2RlcStats));
+     device->SetAttribute("E2DuCalculator", PointerValue(m_phyStats));
++      // E2DUFIX: BuildRicIndicationMessageDu reads every per-UE counter from m_phyStats,
++      // which is fed only by the PHY trace sinks connected below, so a scenario that does
++      // not call EnableTraces() reports an E2 DU message whose per-UE values are all zero.
++      // Deferred to t=0: Config paths match only objects that exist, and the UE devices
++      // that carry RxPacketTraceUe are installed after the gNBs.
++      if (!m_e2PhyTraceScheduled)
++        {
++          m_e2PhyTraceScheduled = true;
++          Simulator::Schedule (Seconds (0.0), &MmWaveHelper::EnableDlPhyTrace, this, false);
++          Simulator::Schedule (Seconds (0.0), &MmWaveHelper::EnableUlPhyTrace, this, false);
++        }
+   }
+     device->Initialize();
+     n->AddDevice(device);
+@@ -3129,8 +3141,17 @@ MmWaveHelper::EnableEnbSchedTrace()
+ // TODO traces for MC
+ 
+ void
+-MmWaveHelper::EnableDlPhyTrace(void)
++MmWaveHelper::EnableDlPhyTrace (bool writeFile)   // E2DUFIX
+ {
++  if (writeFile)
++    {
++      MmWavePhyTrace::SetWriteRxPacketTraceFile (true);
++    }
++  if (m_dlPhyTraceConnected)
++    {
++      return;
++    }
++  m_dlPhyTraceConnected = true;
+     // NS_LOG_FUNCTION_NOARGS ();
+     // Config::Connect ("/NodeList/*/DeviceList/*/MmWaveUePhy/ReportCurrentCellRsrpSinr",
+     //      MakeBoundCallback (&MmWavePhyTrace::ReportCurrentCellRsrpSinrCallback, m_phyStats));
+@@ -3152,8 +3173,17 @@ MmWaveHelper::EnableDlPhyTrace(void)
+ }
+ 
+ void
+-MmWaveHelper::EnableUlPhyTrace(void)
++MmWaveHelper::EnableUlPhyTrace (bool writeFile)   // E2DUFIX
+ {
++  if (writeFile)
++    {
++      MmWavePhyTrace::SetWriteRxPacketTraceFile (true);
++    }
++  if (m_ulPhyTraceConnected)
++    {
++      return;
++    }
++  m_ulPhyTraceConnected = true;
+     NS_LOG_FUNCTION_NOARGS();
+     Config::ConnectWithoutContextFailSafe(
+         "/NodeList/*/DeviceList/*/ComponentCarrierMap/*/MmWaveUePhy/ReportUlPhyTransmission",
+diff --git a/src/mmwave/helper/mmwave-helper.h b/src/mmwave/helper/mmwave-helper.h
+index d99a3fa4..edf696ce 100644
+--- a/src/mmwave/helper/mmwave-helper.h
++++ b/src/mmwave/helper/mmwave-helper.h
+@@ -361,8 +361,8 @@ class MmWaveHelper : public Object
+     void EnablePdcpTraces(void);
+     void EnableMcTraces(void);
+     void EnableRlcTraces(void);
+-    void EnableDlPhyTrace();
+-    void EnableUlPhyTrace();
++    void EnableDlPhyTrace (bool writeFile = true);   // E2DUFIX
++    void EnableUlPhyTrace (bool writeFile = true);   // E2DUFIX
+     void EnableEnbSchedTrace();
+     void EnableE2PdcpTraces (void);
+     Ptr<MmWaveBearerStatsCalculator> GetE2PdcpStats (void);
+@@ -459,6 +459,9 @@ class MmWaveHelper : public Object
+ 
+ 
+     Ptr<MmWavePhyTrace> m_phyStats;
++  bool m_dlPhyTraceConnected = false;   // E2DUFIX: never connect a trace source twice
++  bool m_ulPhyTraceConnected = false;   // E2DUFIX
++  bool m_e2PhyTraceScheduled = false;   // E2DUFIX
+     Ptr<MmWaveMacTrace> m_enbStats;
+ 
+     ObjectFactory m_lteUeAntennaModelFactory;  /// Factory of antenna object for Lte UE.
+diff --git a/src/mmwave/helper/mmwave-phy-trace.cc b/src/mmwave/helper/mmwave-phy-trace.cc
+index 0d2a023f..a3b0d8f9 100644
+--- a/src/mmwave/helper/mmwave-phy-trace.cc
++++ b/src/mmwave/helper/mmwave-phy-trace.cc
+@@ -49,6 +49,7 @@ namespace mmwave
+ 
+ NS_OBJECT_ENSURE_REGISTERED(MmWavePhyTrace);
+ 
++bool MmWavePhyTrace::m_writeRxPacketTraceFile = true;   // E2DUFIX
+ std::ofstream MmWavePhyTrace::m_rxPacketTraceFile;
+ std::string MmWavePhyTrace::m_rxPacketTraceFilename;
+ 
+@@ -70,6 +71,12 @@ MmWavePhyTrace::~MmWavePhyTrace()
+     }
+ }
+ 
++void
++MmWavePhyTrace::SetWriteRxPacketTraceFile (bool writeFile)   // E2DUFIX
++{
++  m_writeRxPacketTraceFile = writeFile;
++}
++
+ TypeId
+ MmWavePhyTrace::GetTypeId(void)
+ {
+@@ -258,6 +265,26 @@ MmWavePhyTrace::UpdateTraces(RxPacketTraceParams params)
+     
+   }
+   
++
++  /* JGRBLER_A: the error counters of 3GPP TS 28.552 clause 5.1.1.7, which this trace did not keep.
++     params.m_corrupt is set by the error model when the block has failed; the branch above
++     classifies blocks by redundancy version alone, so the "error" counter it feeds is really a
++     retransmission count. A block corrupted at the last permitted redundancy version is never
++     retransmitted again -- mmwave-spectrum-phy.cc ends the process at m_rv == 3 -- so it is a
++     residual error, which no link-adaptation loop regulates. */
++  if (params.m_corrupt)
++  {
++    m_macPduErrTotalUeSpecific = IncreaseMapValue (m_macPduErrTotalUeSpecific, pair, 1);
++    if (params.m_rv == 0)
++    {
++      m_macPduErrInitialUeSpecific = IncreaseMapValue (m_macPduErrInitialUeSpecific, pair, 1);
++    }
++    if (params.m_rv == 3)
++    {
++      m_macPduErrResidualUeSpecific = IncreaseMapValue (m_macPduErrResidualUeSpecific, pair, 1);
++    }
++  }
++
+   // UE specific MAC volume 
+   m_macVolumeUeSpecific = IncreaseMapValue (m_macVolumeUeSpecific, pair, params.m_tbSize);
+   
+@@ -398,6 +425,8 @@ MmWavePhyTrace::ResetMapValue (std::map<RntiCellIdPair_t, uint32_t> map,
+ void
+ MmWavePhyTrace::RxPacketTraceUeCallback (Ptr<MmWavePhyTrace> phyStats, std::string path, RxPacketTraceParams params)
+ {
++    if (m_writeRxPacketTraceFile)   // E2DUFIX: logging is now independent of the
++    {                           // measurement that feeds the DU KPM report
+     if (!m_rxPacketTraceFile.is_open())
+     {
+         m_rxPacketTraceFile.open(m_rxPacketTraceFilename.c_str());
+@@ -418,6 +447,7 @@ MmWavePhyTrace::RxPacketTraceUeCallback (Ptr<MmWavePhyTrace> phyStats, std::stri
+                       << params.m_tbSize << "\t" << +params.m_mcs << "\t" 
+                       << +params.m_rv << "\t" << 10 * std::log10 (params.m_sinr) << "\t" 
+                       << params.m_corrupt << "\t" <<  params.m_tbler << std::endl;
++    }
+ 
+ 
+   
+@@ -440,6 +470,8 @@ MmWavePhyTrace::RxPacketTraceEnbCallback(Ptr<MmWavePhyTrace> phyStats,
+                                          std::string path,
+                                          RxPacketTraceParams params)
+ {
++    if (m_writeRxPacketTraceFile)   // E2DUFIX: logging is now independent of the
++    {                           // measurement that feeds the DU KPM report
+     if (!m_rxPacketTraceFile.is_open())
+     {
+         m_rxPacketTraceFile.open(m_rxPacketTraceFilename.c_str());
+@@ -459,6 +491,7 @@ MmWavePhyTrace::RxPacketTraceEnbCallback(Ptr<MmWavePhyTrace> phyStats,
+                         << params.m_tbSize << "\t" << +params.m_mcs << "\t" << +params.m_rv << "\t"
+                         << 10 * std::log10(params.m_sinr) << " \t" << params.m_corrupt << "\t"
+                         << params.m_tbler << std::endl;
++    }
+ 
+     if (params.m_corrupt)
+     {
+@@ -484,6 +517,9 @@ MmWavePhyTrace::ResetPhyTracesForRntiCellId(uint16_t rnti, uint16_t cellId)
+   m_macPduInitialTransmissionUeSpecific = ResetMapValue (m_macPduInitialTransmissionUeSpecific, pair);
+   
+   m_macPduRetransmissionUeSpecific = ResetMapValue (m_macPduRetransmissionUeSpecific, pair);
++    m_macPduErrInitialUeSpecific = ResetMapValue (m_macPduErrInitialUeSpecific, pair);   // JGRBLER_A
++    m_macPduErrTotalUeSpecific = ResetMapValue (m_macPduErrTotalUeSpecific, pair);   // JGRBLER_A
++    m_macPduErrResidualUeSpecific = ResetMapValue (m_macPduErrResidualUeSpecific, pair);   // JGRBLER_A
+   
+   m_macVolumeUeSpecific = ResetMapValue (m_macVolumeUeSpecific, pair);
+   
+@@ -555,6 +591,30 @@ MmWavePhyTrace::GetMacPduRetransmissionUeSpecific (uint16_t rnti, uint16_t cellI
+   return GetMapValue (m_macPduRetransmissionUeSpecific, pair);
+ }
+ 
++/* JGRBLER_A: 5.1.1.7.2 initial error number of DL TBs */
++uint32_t 
++MmWavePhyTrace::GetMacPduErrInitialUeSpecific (uint16_t rnti, uint16_t cellId)
++{
++  RntiCellIdPair_t pair {rnti, cellId};
++  return GetMapValue (m_macPduErrInitialUeSpecific, pair);
++}
++
++/* JGRBLER_A: 5.1.1.7.4 total error number of DL TBs */
++uint32_t 
++MmWavePhyTrace::GetMacPduErrTotalUeSpecific (uint16_t rnti, uint16_t cellId)
++{
++  RntiCellIdPair_t pair {rnti, cellId};
++  return GetMapValue (m_macPduErrTotalUeSpecific, pair);
++}
++
++/* JGRBLER_A: 5.1.1.7.5 residual error number of DL TBs */
++uint32_t 
++MmWavePhyTrace::GetMacPduErrResidualUeSpecific (uint16_t rnti, uint16_t cellId)
++{
++  RntiCellIdPair_t pair {rnti, cellId};
++  return GetMapValue (m_macPduErrResidualUeSpecific, pair);
++}
++
+ uint32_t
+ MmWavePhyTrace::GetMacVolumeUeSpecific (uint16_t rnti, uint16_t cellId)
+ {
+diff --git a/src/mmwave/helper/mmwave-phy-trace.h b/src/mmwave/helper/mmwave-phy-trace.h
+index 57962333..180587fb 100644
+--- a/src/mmwave/helper/mmwave-phy-trace.h
++++ b/src/mmwave/helper/mmwave-phy-trace.h
+@@ -111,6 +111,13 @@ public:
+    * @return the number of MAC PDUs (retx), UE specific
+    */
+   uint32_t GetMacPduRetransmissionUeSpecific (uint16_t rnti, uint16_t cellId);
++  /** JGRBLER_A: 5.1.1.7.2 initial error number of DL TBs */
++  uint32_t GetMacPduErrInitialUeSpecific (uint16_t rnti, uint16_t cellId);
++  /** JGRBLER_A: 5.1.1.7.4 total error number of DL TBs */
++  uint32_t GetMacPduErrTotalUeSpecific (uint16_t rnti, uint16_t cellId);
++  /** JGRBLER_A: 5.1.1.7.5 residual error number of DL TBs */
++  uint32_t GetMacPduErrResidualUeSpecific (uint16_t rnti, uint16_t cellId);
++
+   
+   /**
+    * Gets MAC volume (amount of TXed bytes), UE specific
+@@ -271,10 +278,15 @@ public:
+   Time GetLastResetTime (uint16_t rnti, uint16_t cellId);
+ 
+ 
+-private:
++// E2DUFIX: switch the per-transport-block trace file off without losing the
++    // measurements that feed the E2 DU KPM report.
++    static void SetWriteRxPacketTraceFile (bool writeFile);
++
++  private:
+   //void ReportInterferenceTrace (uint64_t imsi, SpectrumValue& sinr);
+   //void ReportDLTbSize (uint64_t imsi, uint64_t tbSize);
+-  static std::ofstream m_rxPacketTraceFile;   //!< Output stream for the PHY reception trace
++  static bool m_writeRxPacketTraceFile;   // E2DUFIX
++    static std::ofstream m_rxPacketTraceFile;   //!< Output stream for the PHY reception trace
+   static std::string m_rxPacketTraceFilename;   //!< Output filename for the PHY reception trace
+ 
+   static std::ofstream m_ulPhyTraceFile;    //!< Output stream for the UL PHY transmission trace
+@@ -286,6 +298,10 @@ private:
+   std::map<RntiCellIdPair_t, uint32_t> m_macPduUeSpecific;
+   std::map<RntiCellIdPair_t, uint32_t> m_macPduInitialTransmissionUeSpecific;
+   std::map<RntiCellIdPair_t, uint32_t> m_macPduRetransmissionUeSpecific;
++  std::map<RntiCellIdPair_t, uint32_t> m_macPduErrInitialUeSpecific;   //!< JGRBLER_A 5.1.1.7.2 initial error number of DL TBs
++  std::map<RntiCellIdPair_t, uint32_t> m_macPduErrTotalUeSpecific;   //!< JGRBLER_A 5.1.1.7.4 total error number of DL TBs
++  std::map<RntiCellIdPair_t, uint32_t> m_macPduErrResidualUeSpecific;   //!< JGRBLER_A 5.1.1.7.5 residual error number of DL TBs
++
+   std::map<RntiCellIdPair_t, uint32_t> m_macVolumeUeSpecific; //!< UE specific MAC volume
+   std::map<RntiCellIdPair_t, uint32_t> m_macPduQpskUeSpecific; //!< UE specific MAC PDUs QPSK
+   std::map<RntiCellIdPair_t, uint32_t> m_macPdu16QamUeSpecific; //!< UE specific MAC PDUs 16QAM
+diff --git a/src/mmwave/model/mmwave-enb-mac.cc b/src/mmwave/model/mmwave-enb-mac.cc
+index 5a1d548f..c7331886 100644
+--- a/src/mmwave/model/mmwave-enb-mac.cc
++++ b/src/mmwave/model/mmwave-enb-mac.cc
+@@ -1,3 +1,6 @@
++#include <fstream>
++#include <map>
++#include <ns3/slice-registry.h>
+ /* -*-  Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil; -*- */
+ /*
+  *   Copyright (c) 2011 Centre Tecnologic de Telecomunicacions de Catalunya (CTTC)
+@@ -484,7 +487,7 @@ MmWaveEnbMac::DoSlotIndication(SfnSf sfnSf)
+                                       m_dlCqiReceived.end());
+         m_dlCqiReceived.erase(m_dlCqiReceived.begin(), m_dlCqiReceived.end());
+ 
+-        m_macSchedSapProvider->SchedDlCqiInfoReq(dlCqiInfoReq);
++        (SliceRegistry::Instance ().SetCurrentCell (m_cellId), m_macSchedSapProvider)->SchedDlCqiInfoReq(dlCqiInfoReq);
+     }
+ 
+     if (!m_receivedRachPreambleCount.empty())
+@@ -594,6 +597,7 @@ MmWaveEnbMac::DoSlotIndication(SfnSf sfnSf)
+         }
+ 
+         params.m_ueList = m_associatedUe;
++        SliceRegistry::Instance ().SetCurrentCell (m_cellId); // SLICE PATCH
+         m_macSchedSapProvider->SchedTriggerReq(params);
+     }
+ }
+@@ -835,6 +839,30 @@ MmWaveEnbMac::DoDlHarqFeedback(DlHarqInfo params)
+         m_miDlHarqProcessesPackets.find(params.m_rnti);
+     NS_ASSERT(it != m_miDlHarqProcessesPackets.end());
+ 
++    {
++        /* JamGuard: per-UE DL HARQ ACK/NACK counters, flushed every 100 ms to DlHarqStats.txt */
++        static std::ofstream s_jgHarq;
++        static std::map<std::pair<uint16_t, uint16_t>, std::pair<uint32_t, uint32_t>> s_jgCnt;
++        static double s_jgLast = 0.0;
++        auto& c = s_jgCnt[std::make_pair(m_cellId, params.m_rnti)];
++        if (params.m_harqStatus == DlHarqInfo::ACK) c.first++; else c.second++;
++        double now = Simulator::Now().GetSeconds();
++        if (now - s_jgLast >= 0.1)
++        {
++            if (!s_jgHarq.is_open())
++            {
++                s_jgHarq.open("DlHarqStats.txt", std::ios_base::out | std::ios_base::trunc);
++                s_jgHarq << "t_s cell rnti ack nack" << std::endl;
++            }
++            for (auto& e : s_jgCnt)
++                if (e.second.first + e.second.second > 0)
++                    s_jgHarq << now << " " << e.first.first << " " << e.first.second << " "
++                             << e.second.first << " " << e.second.second << "\n";
++            s_jgHarq.flush();
++            s_jgCnt.clear();
++            s_jgLast = now;
++        }
++    }
+     if (params.m_harqStatus == DlHarqInfo::ACK)
+     {
+         // discard buffer
+diff --git a/src/mmwave/model/mmwave-enb-net-device.cc b/src/mmwave/model/mmwave-enb-net-device.cc
+index 3d949a75..334b8f0f 100644
+--- a/src/mmwave/model/mmwave-enb-net-device.cc
++++ b/src/mmwave/model/mmwave-enb-net-device.cc
+@@ -1,3 +1,10 @@
++#include <ns3/mmwave-enb-phy.h> // JGRSRP
++#include <cmath>
++#include <cstdlib>
++#include <chrono>
++#include <fstream>
++#include <mutex>
++#include <algorithm>
+ /* -*-  Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil; -*- */
+ /*
+ *   Copyright (c) 2011 Centre Tecnologic de Telecomunicacions de Catalunya (CTTC)
+@@ -35,6 +42,10 @@
+ *                                Integration of Carrier Aggregation
+ */
+ 
++#include <ns3/node-list.h>
++#include <ns3/lte-enb-net-device.h>
++#include <ns3/global-value.h>
++#include <ns3/boolean.h>
+ #include "ns3/mmwave-helper.h"
+ #include <ns3/llc-snap-header.h>
+ #include <ns3/simulator.h>
+@@ -65,6 +76,7 @@
+ #include <ns3/lte-rlc-am.h>
+ #include "UEID-GNB.h"
+ #include "E2SM-RC-ControlMessage-Format1-Item.h"
++#include "ns3/slice-registry.h" // JamGuard: RC style 2
+ #include "RANParameter-ValueType-Choice-ElementFalse.h"
+ #include <ns3/mmwave-indication-message-helper.h>
+ #include "node-container-manager.h"
+@@ -662,7 +674,7 @@ MmWaveEnbNetDevice::UpdateConfig (void)
+               std::string ue_header =
+                   "TB.TotNbrDl.1.UEID,TB.TotNbrDlInitial.UEID,TB.TotNbrDlInitial.Qpsk.UEID,"
+                   "TB.TotNbrDlInitial.16Qam.UEID,TB.TotNbrDlInitial.64Qam.UEID,"
+-                  "TB.ErrTotalNbrDl.1.UEID,"
++                  "TB.ErrTotalNbrDl.1.UEID,TB.ErrNbrDlInitial.UEID,TB.ErrTotalNbrDlTrue.UEID,TB.ResidErrNbrDl.UEID,"
+                   "QosFlow.PdcpPduVolumeDL_Filter.UEID,RRU.PrbUsedDl.UEID,"
+                   "CARR.PDSCHMCSDist.Bin1.UEID,"
+                   "CARR.PDSCHMCSDist.Bin2.UEID,CARR.PDSCHMCSDist.Bin3.UEID,"
+@@ -744,6 +756,131 @@ SetBSTX (Ptr<MmWaveEnbPhy> phy, int val, uint16_t cellid, bool m_esON)
+       phy->SetNoiseFigure (5); //default
+     }
+ }
++// XAPP PATCH (E2): RC Handover_Control routed through the LTE anchor RRC
++//   target = LTE anchor cell     : move the UE data path to LTE (frequency evasion)
++//   target = NR cell, UE on LTE  : return the UE data path to NR
++//   target = NR cell, UE on NR   : secondary-cell handover (same path as the control file)
++static GlobalValue g_e2HoViaAnchor ("e2HoViaAnchor",
++                                    "XAPP PATCH: route E2 RC handover commands through the LTE anchor RRC",
++                                    BooleanValue (false), MakeBooleanChecker ());
++
++static bool
++XappE2HoViaAnchor ()
++{
++  static int cached = -1;
++  if (cached < 0)
++    {
++      BooleanValue v;
++      g_e2HoViaAnchor.GetValue (v);
++      cached = v.Get () ? 1 : 0;
++    }
++  return cached == 1;
++}
++
++static void
++XappE2Ho (uint64_t imsi, uint16_t targetCellId)
++{
++  static Ptr<LteEnbRrc> rrc;
++  static uint16_t lteCell = 0;
++  for (NodeList::Iterator it = NodeList::Begin (); it != NodeList::End () && !rrc; ++it)
++    {
++      for (uint32_t i = 0; i < (*it)->GetNDevices (); ++i)
++        {
++          Ptr<LteEnbNetDevice> dev = DynamicCast<LteEnbNetDevice> ((*it)->GetDevice (i));
++          if (dev)
++            {
++              rrc = dev->GetRrc ();
++              lteCell = dev->GetCellId ();
++              break;
++            }
++        }
++    }
++  if (!rrc)
++    {
++      std::cout << "xApp E2: LTE anchor RRC not found" << std::endl;
++      return;
++    }
++  double const t = Simulator::Now ().GetSeconds ();
++  if (targetCellId == lteCell)
++    {
++      std::cout << t << " s xApp E2: UE " << imsi << " -> LTE anchor (cell " << lteCell << ")" << std::endl;
++      rrc->TakeUeHoControl (imsi);
++      rrc->ForceConnectionSwitch (imsi, false);
++    }
++  else if (rrc->XappIsUsingLte (imsi))
++    {
++      std::cout << t << " s xApp E2: UE " << imsi << " LTE -> NR (cell " << rrc->XappLastMmWaveCell (imsi) << ")" << std::endl;
++      rrc->ForceConnectionSwitch (imsi, true);
++    }
++  else if (rrc->XappLastMmWaveCell (imsi) != targetCellId)
++    {
++      std::cout << t << " s xApp E2: UE " << imsi << " NR handover " << rrc->XappLastMmWaveCell (imsi)
++                       << " -> " << targetCellId << std::endl;
++      rrc->TakeUeHoControl (imsi);
++      rrc->PerformHandoverToTargetCell (imsi, targetCellId);
++      Simulator::Schedule (MilliSeconds (500), &LteEnbRrc::XappReleaseControl, rrc, imsi);
++    }
++}
++
++/* public entry for the in-sim JamGuard (same path as the E2 RC handler) */
++void
++MmWaveEnbNetDevice::JglHo (uint64_t imsi, uint16_t targetCellId)
++{
++  XappE2Ho (imsi, targetCellId);
++}
++
++/* JamGuard: log of RIC control messages (E2 thread: wall clock only; sim thread: sim time) */
++static std::mutex g_jgE2Mtx;
++static std::ofstream g_jgE2Log;
++static void
++JglE2Log (const char *side, double simS, int style, long action, int cell, unsigned long long value)
++{
++  std::lock_guard<std::mutex> lk (g_jgE2Mtx);
++  if (!g_jgE2Log.is_open ())
++    {
++      g_jgE2Log.open ("e2_ctrl_rx.csv", std::ios_base::out | std::ios_base::trunc);
++      g_jgE2Log << "side,wall_us,sim_s,style,action,cell,value" << std::endl;
++    }
++  long long us = std::chrono::duration_cast<std::chrono::microseconds> (
++                     std::chrono::system_clock::now ().time_since_epoch ()).count ();
++  g_jgE2Log << side << "," << us << "," << simS << "," << style << "," << action << "," << cell << ","
++            << value << std::endl;
++}
++
++/* JamGuard: apply a style-2 action inside the simulator thread */
++static void
++JglRraApply (int action, uint16_t cell, uint32_t rest)
++{
++  if (action == 6)
++    {
++      uint32_t slice = rest / 10000;
++      double q = (rest % 10000) / 1000.0;
++      if (cell == 0)
++        SliceRegistry::Instance ().SetSliceMaxRatio (slice, q);
++      else
++        SliceRegistry::Instance ().SetCellSliceMaxRatio (cell, slice, q);
++      std::cout << Simulator::Now ().GetSeconds () << " s xApp E2: RC slice quota cell " << cell << " slice "
++                << slice << " max ratio " << q << std::endl;
++    }
++  else if (action == 100)
++    {
++      int cap = (int) rest - 1;
++      SliceRegistry::Instance ().SetCellMcsCap (cell, cap);
++      std::cout << Simulator::Now ().GetSeconds () << " s xApp E2: RC MCS cap cell " << cell << " -> " << cap
++                << std::endl;
++    }
++  else
++    std::cout << "xApp E2: RC style 2 action " << action << " not supported" << std::endl;
++  JglE2Log ("apply", Simulator::Now ().GetSeconds (), 2, action, cell, rest);
++}
++
++/* JamGuard: handover applied (sim time) */
++static void
++JglHoMark (uint64_t imsi, uint16_t target)
++{
++  JglE2Log ("apply", Simulator::Now ().GetSeconds (), 3, 1, target, imsi);
++}
++
+ void
+ MmWaveEnbNetDevice::ControlMessageReceivedCallback (E2AP_PDU_t *sub_req_pdu)
+ {
+@@ -766,7 +903,20 @@ MmWaveEnbNetDevice::ControlMessageReceivedCallback (E2AP_PDU_t *sub_req_pdu)
+       }
+ 
+       case RicControlMessage::ControlMessageServiceStyle::Radio_Resource_Allocation_Control: {
+-        NS_LOG_UNCOND ("Unsupported RIC Style Type ");
++        /* JamGuard: slice-level PRB quota (action 6) and DL MCS cap (vendor action 100) */
++        UEID_GNB_t *g = controlMessage->m_e2SmRcControlHeaderFormat1->ueID.choice.gNB_UEID;
++        unsigned long long v = 0;
++        if (g != nullptr && g->ran_UEID != nullptr)
++          memcpy (&v, g->ran_UEID->buf, std::min<size_t> (g->ran_UEID->size, sizeof (v)));
++        long act = controlMessage->m_e2SmRcControlHeaderFormat1->ric_ControlAction_ID;
++        uint16_t cell = (uint16_t) (v / 1000000ULL);
++        uint32_t rest = (uint32_t) (v % 1000000ULL);
++        std::cout << "xApp E2: RC style 2 action " << act << " value " << v << std::endl;
++        JglE2Log ("rx", -1.0, 2, act, cell, rest);
++        if (!m_forceE2FileLogging)
++          Simulator::ScheduleWithContext (1, Seconds (0), &JglRraApply, (int) act, cell, rest);
++        else
++          Simulator::Schedule (Seconds (0), &JglRraApply, (int) act, cell, rest);
+         break;
+       }
+       case RicControlMessage::ControlMessageServiceStyle::Connected_Mode_Mobility: {
+@@ -782,6 +932,39 @@ MmWaveEnbNetDevice::ControlMessageReceivedCallback (E2AP_PDU_t *sub_req_pdu)
+               uint64_t imsi = {0};
+               memcpy (&imsi, UEgnb->ran_UEID->buf, UEgnb->ran_UEID->size);
+               uint16_t targetCellId = controlMessage->GetTargetCell();
++              // XAPP PATCH (E2): JamGuard routing through the LTE anchor RRC
++              if (imsi >= 100000000ULL) /* JGCMD2: JamGuard cell-level command in the mobility format */
++                {
++                  uint64_t w = imsi - 100000000ULL;
++                  int act = (w / 10000000ULL) == 0 ? 6 : 100;
++                  uint16_t cell = (uint16_t) ((w / 1000000ULL) % 10ULL);
++                  uint32_t rest = (uint32_t) (w % 1000000ULL);
++                  std::cout << "xApp E2: RC cell command action " << act << " cell " << cell << " value " << rest << std::endl;
++                  JglE2Log ("rx", -1.0, 2, act, cell, rest);
++                  if (!m_forceE2FileLogging)
++                    Simulator::ScheduleWithContext (1, Seconds (0), &JglRraApply, act, cell, rest);
++                  else
++                    Simulator::Schedule (Seconds (0), &JglRraApply, act, cell, rest);
++                  break;
++                }
++              std::cout << "xApp E2: RC Handover_Control received, UE " << imsi << " target " << targetCellId << std::endl;
++              JglE2Log ("rx", -1.0, 3, 1, targetCellId, imsi);
++              if (!m_forceE2FileLogging)
++                Simulator::ScheduleWithContext (1, Seconds (0), &JglHoMark, imsi, targetCellId);
++              else
++                Simulator::Schedule (Seconds (0), &JglHoMark, imsi, targetCellId);
++              if (XappE2HoViaAnchor ())
++                {
++                  if (!m_forceE2FileLogging)
++                    {
++                      Simulator::ScheduleWithContext (1, Seconds (0), &XappE2Ho, imsi, targetCellId);
++                    }
++                  else
++                    {
++                      Simulator::Schedule (Seconds (0), &XappE2Ho, imsi, targetCellId);
++                    }
++                  break;
++                }
+ 
+               auto ueMap = m_rrc->GetUeMap();
+               bool ueFound = false;
+@@ -1165,6 +1348,19 @@ MmWaveEnbNetDevice::BuildRicIndicationMessageCuCp (std::string plmId)
+       // ueVal->AddItem<long> ("L3-serving-SINR", sinrThisCell);
+       // ueVal->AddItem<long> ("L3-serving-SINR-3gpp", convertedSinr);
+ 
++      /* JGRSRP: RSRP-like received power of the serving and neighbour NR cells (JG_RSRP_KPM set) */
++      static const bool jgRsrpKpm = std::getenv ("JG_RSRP_KPM") != nullptr;
++      if (jgRsrpKpm)
++        for (auto &jgc : m_l3sinrMap[imsi])
++          {
++            double jgS = MmWaveEnbPhy::GetLastRsrpDbm (imsi, jgc.first);
++            if (std::isnan (jgS))
++              continue;
++            std::string jgName = std::string (jgc.first == m_cellId ? "L3servingRSRP" : "L3neighRSRP") +
++                                 "_cell_" + std::to_string (jgc.first) + "_UEID_" + std::to_string (imsi);
++            indicationMessageHelper->JgAddUeExtra (ueImsiComplete, jgName, jgS); // JGRSRP2
++          }
++
+       // For the neighbors
+       // TODO create double map, imsi -> cell -> sinr
+       // TODO store at most 8 reports for each UE, as per the standard
+@@ -1377,6 +1573,11 @@ MmWaveEnbNetDevice::BuildRicIndicationMessageDu (std::string plmId, uint16_t nrC
+       mac64QamCellSpecific += mac64Qam;
+ 
+       uint32_t macRetx = m_e2DuCalculator->GetMacPduRetransmissionUeSpecific (rnti, m_cellId);
++      /* JGRBLER */
++      uint32_t macErrInitial = m_e2DuCalculator->GetMacPduErrInitialUeSpecific (rnti, m_cellId);
++      uint32_t macErrTotal = m_e2DuCalculator->GetMacPduErrTotalUeSpecific (rnti, m_cellId);
++      uint32_t macErrResidual =
++          m_e2DuCalculator->GetMacPduErrResidualUeSpecific (rnti, m_cellId);
+       macRetxCellSpecific += macRetx;
+ 
+       // Numerator = (Sum of number of symbols across all rows (TTIs) group by cell ID and UE ID within a given time window)
+@@ -1486,12 +1687,18 @@ MmWaveEnbNetDevice::BuildRicIndicationMessageDu (std::string plmId, uint16_t nrC
+           ueImsiComplete, macPduUe, macPduInitialUe, macQpsk, mac16Qam, mac64Qam, macRetx,
+           macVolume, macPrb, macMac04, macMac59, macMac1014, macMac1519, macMac2024, macMac2529,
+           macSinrBin1, macSinrBin2, macSinrBin3, macSinrBin4, macSinrBin5, macSinrBin6, macSinrBin7,
+-          rlcBufferOccup, drbThrDlUeid);
++          rlcBufferOccup, drbThrDlUeid,
++          (long) macErrInitial, (long) macErrTotal,
++          (long) macErrResidual);   /* JGRBLER_B */
+ 
+       uePmStringDu.insert (std::make_pair (
+           imsi, std::to_string (macPduUe) + "," + std::to_string (macPduInitialUe) + "," +
+                     std::to_string (macQpsk) + "," + std::to_string (mac16Qam) + "," +
+-                    std::to_string (mac64Qam) + "," + std::to_string (macRetx) + "," +
++                    std::to_string (mac64Qam) + "," + std::to_string (macRetx) + ","
++              + std::to_string (macErrInitial) + ","
++              + std::to_string (macErrTotal) + ","
++              + std::to_string (macErrResidual) + ","   /* JGRBLER_C */
++              +
+                     std::to_string (macVolume) + "," + std::to_string (macPrb) + "," +
+                     std::to_string (macMac04) + "," + std::to_string (macMac59) + "," +
+                     std::to_string (macMac1014) + "," + std::to_string (macMac1519) + "," +
+@@ -1807,6 +2014,11 @@ MmWaveEnbNetDevice::BuildGUIDu (std::string plmId, uint16_t nrCellId)
+       mac64QamCellSpecific += mac64Qam;
+ 
+       uint32_t macRetx = m_e2DuCalculator->GetMacPduRetransmissionUeSpecific (rnti, m_cellId);
++      /* JGRBLER */
++      uint32_t macErrInitial = m_e2DuCalculator->GetMacPduErrInitialUeSpecific (rnti, m_cellId);
++      uint32_t macErrTotal = m_e2DuCalculator->GetMacPduErrTotalUeSpecific (rnti, m_cellId);
++      uint32_t macErrResidual =
++          m_e2DuCalculator->GetMacPduErrResidualUeSpecific (rnti, m_cellId);
+       macRetxCellSpecific += macRetx;
+ 
+       // Numerator = (Sum of number of symbols across all rows (TTIs) group by cell ID and UE ID within a given time window)
+@@ -1915,7 +2127,11 @@ MmWaveEnbNetDevice::BuildGUIDu (std::string plmId, uint16_t nrCellId)
+       uePmStringDu.insert (std::make_pair (
+           imsi, std::to_string (macPduUe) + "," + std::to_string (macPduInitialUe) + "," +
+                     std::to_string (macQpsk) + "," + std::to_string (mac16Qam) + "," +
+-                    std::to_string (mac64Qam) + "," + std::to_string (macRetx) + "," +
++                    std::to_string (mac64Qam) + "," + std::to_string (macRetx) + ","
++              + std::to_string (macErrInitial) + ","
++              + std::to_string (macErrTotal) + ","
++              + std::to_string (macErrResidual) + ","   /* JGRBLER_C */
++              +
+                     std::to_string (macVolume) + "," + std::to_string (macPrb) + "," +
+                     std::to_string (macMac04) + "," + std::to_string (macMac59) + "," +
+                     std::to_string (macMac1014) + "," + std::to_string (macMac1519) + "," +
+@@ -2066,6 +2282,19 @@ MmWaveEnbNetDevice::BuildGUICuCp (std::string plmId)
+       // ueVal->AddItem<long> ("L3-serving-SINR", sinrThisCell);
+       // ueVal->AddItem<long> ("L3-serving-SINR-3gpp", convertedSinr);
+ 
++      /* JGRSRP: RSRP-like received power of the serving and neighbour NR cells (JG_RSRP_KPM set) */
++      static const bool jgRsrpKpm = std::getenv ("JG_RSRP_KPM") != nullptr;
++      if (jgRsrpKpm)
++        for (auto &jgc : m_l3sinrMap[imsi])
++          {
++            double jgS = MmWaveEnbPhy::GetLastRsrpDbm (imsi, jgc.first);
++            if (std::isnan (jgS))
++              continue;
++            std::string jgName = std::string (jgc.first == m_cellId ? "L3servingRSRP" : "L3neighRSRP") +
++                                 "_cell_" + std::to_string (jgc.first) + "_UEID_" + std::to_string (imsi);
++            (void) jgName; (void) jgS; // JGRSRP2: GUI copy, not sent over E2
++          }
++
+       // For the neighbors
+       // TODO create double map, imsi -> cell -> sinr
+       // TODO store at most 8 reports for each UE, as per the standard
+diff --git a/src/mmwave/model/mmwave-enb-net-device.h b/src/mmwave/model/mmwave-enb-net-device.h
+index f136addb..a0c09198 100644
+--- a/src/mmwave/model/mmwave-enb-net-device.h
++++ b/src/mmwave/model/mmwave-enb-net-device.h
+@@ -110,6 +110,7 @@ namespace ns3 {
+             Ptr<MmWaveEnbPhy> GetPhy(uint8_t index);
+ 
+             uint16_t GetCellId() const;
++  void JglHo (uint64_t imsi, uint16_t targetCellId);
+ 
+             std::map<uint16_t, Ptr<UeManager>> GetUeMap ();
+ 
+diff --git a/src/mmwave/model/mmwave-enb-phy.cc b/src/mmwave/model/mmwave-enb-phy.cc
+index ba4aed62..4b078817 100644
+--- a/src/mmwave/model/mmwave-enb-phy.cc
++++ b/src/mmwave/model/mmwave-enb-phy.cc
+@@ -1,3 +1,4 @@
++#include <cstdlib> // JGRSRP3
+ /* -*-  Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil; -*- */
+ /*
+  *   Copyright (c) 2011 Centre Tecnologic de Telecomunicacions de Catalunya (CTTC)
+@@ -31,6 +32,8 @@
+  *                  LOS-NLOS transitions, SINR measurement error and filtering
+  */
+ 
++#include <ns3/global-value.h>
++#include <ns3/boolean.h>
+ #include "mmwave-enb-phy.h"
+ 
+ #include "mc-ue-net-device.h"
+@@ -43,7 +46,10 @@
+ #include <ns3/antenna-model.h>
+ #include <ns3/attribute-accessor-helper.h>
+ #include <ns3/average.h>
++#include <ns3/abort.h>
++#include <ns3/boolean.h>
+ #include <ns3/double.h>
++#include <fstream>
+ #include <ns3/log.h>
+ #include <ns3/node-list.h>
+ #include <ns3/node.h>
+@@ -72,6 +78,102 @@ NS_LOG_COMPONENT_DEFINE("MmWaveEnbPhy");
+ 
+ NS_OBJECT_ENSURE_REGISTERED(MmWaveEnbPhy);
+ 
++// JAMMER PATCH: jammers registered from the scenario
++std::vector<MmWaveEnbPhy::JammerInfo> MmWaveEnbPhy::s_jammers;
++std::map<uint64_t, std::map<uint16_t, double>> MmWaveEnbPhy::s_lastRsrpDbm; // JGRSRP
++double
++MmWaveEnbPhy::GetLastRsrpDbm(uint64_t imsi, uint16_t cellId)
++{
++    auto a = s_lastRsrpDbm.find(imsi);
++    if (a == s_lastRsrpDbm.end())
++        return std::nan("");
++    auto b = a->second.find(cellId);
++    return b == a->second.end() ? std::nan("") : b->second;
++}
++bool MmWaveEnbPhy::s_jammersActive = true;
++static double g_jamOffsetDb = 0.0; // JAMMER PATCH (JamGuard): time-varying jammer power
++
++void
++MmWaveEnbPhy::SetJammerPowerOffsetDb(double db)
++{
++    g_jamOffsetDb = db;
++}
++
++void
++MmWaveEnbPhy::SetJammersActive(bool on)
++{
++    s_jammersActive = on;
++    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << " s jammer " << (on ? "ON" : "OFF"));
++}
++
++const std::vector<MmWaveEnbPhy::JammerInfo>&
++MmWaveEnbPhy::ActiveJammers()
++{
++    static const std::vector<JammerInfo> none;
++    return s_jammersActive ? s_jammers : none;
++}
++
++// JAMMER PATCH (data path): off by default, so that earlier campaigns are reproduced unchanged
++static GlobalValue g_jammerDataPath("jammerDataPath",
++                                    "JAMMER PATCH: also apply the registered jammers to the downlink "
++                                    "data reception of the UEs (SINR, CQI, MCS, BLER)",
++                                    BooleanValue(false),
++                                    MakeBooleanChecker());
++
++bool
++MmWaveEnbPhy::GetJammerDataPath()
++{
++    static int cached = -1;
++    if (cached < 0)
++    {
++        BooleanValue v;
++        g_jammerDataPath.GetValue(v);
++        cached = v.Get() ? 1 : 0;
++    }
++    return cached == 1;
++}
++
++double
++MmWaveEnbPhy::GetJammerRxPowerW(Ptr<MobilityModel> rx)
++{
++    double w = 0.0;
++    if (!rx)
++    {
++        return w;
++    }
++    for (const auto& jam : ActiveJammers())
++    {
++        double dbm = jam.pathLoss->CalcRxPower((jam.txPowerDbm + g_jamOffsetDb), jam.mobility, rx);
++        w += std::pow(10.0, (dbm - 30.0) / 10.0);
++    }
++    return w;
++}
++static std::ofstream g_jammerRxLog; // JAMMER PATCH: MmWaveJammerRx.txt (S, J, N per UE and cell)
++
++void
++MmWaveEnbPhy::AddJammer(Ptr<MobilityModel> jammerMobility,
++                        double txPowerDbm,
++                        Ptr<PropagationLossModel> pathLossModel)
++{
++    NS_ABORT_MSG_IF(!jammerMobility, "Jammer mobility model not set");
++    NS_ABORT_MSG_IF(!pathLossModel, "Jammer path-loss model not set");
++    JammerInfo info;
++    info.mobility = jammerMobility;
++    info.txPowerDbm = txPowerDbm;
++    info.pathLoss = pathLossModel;
++    s_jammers.push_back(info);
++}
++
++void
++MmWaveEnbPhy::ClearJammers()
++{
++    s_jammers.clear();
++    if (g_jammerRxLog.is_open())
++    {
++        g_jammerRxLog.close();
++    }
++}
++
+ MmWaveEnbPhy::MmWaveEnbPhy()
+ {
+     NS_LOG_FUNCTION(this);
+@@ -122,6 +224,14 @@ MmWaveEnbPhy::GetTypeId(void)
+                           DoubleValue(25.6),
+                           MakeDoubleAccessor(&MmWaveEnbPhy::m_ueUpdateSinrPeriod),
+                           MakeDoubleChecker<double>())
++            .AddAttribute("DlSinrWithJammers",
++                          "JAMMER PATCH. If true, the per-UE L3 SINR estimate is the downlink SINR "
++                          "at the UE, S/(N_UE + J), where S uses the gNB transmit power, N_UE the "
++                          "UE noise figure and J the power received from the jammers registered "
++                          "with MmWaveEnbPhy::AddJammer. If false, the original SNR is used.",
++                          BooleanValue(false),
++                          MakeBooleanAccessor(&MmWaveEnbPhy::m_dlSinrWithJammers),
++                          MakeBooleanChecker())
+             .AddAttribute("Transient",
+                           "Transient period (in microseconds) in which just collect SINR values "
+                           "without filtering the sample",
+@@ -592,6 +702,10 @@ MmWaveEnbPhy::UpdateUeSinrEstimate()
+         MmWaveSpectrumValueHelper::CreateNoisePowerSpectralDensity(m_phyMacConfig, m_noiseFigure);
+     Ptr<SpectrumValue> totalReceivedPsd =
+         Create<SpectrumValue>(SpectrumValue(noisePsd->GetSpectrumModel()));
++    // JAMMER PATCH: per-UE values needed for the downlink SINR
++    std::map<uint64_t, double> ueTxPowerDbm;
++    std::map<uint64_t, double> ueNoiseFigureDb;
++    std::map<uint64_t, Ptr<MobilityModel>> ueMobility;
+ 
+     for (std::map<uint64_t, Ptr<NetDevice>>::iterator ue = m_ueAttachedImsiMap.begin();
+          ue != m_ueAttachedImsiMap.end();
+@@ -685,6 +799,9 @@ MmWaveEnbPhy::UpdateUeSinrEstimate()
+         }
+ 
+         NS_LOG_LOGIC("RxPsd " << *rxPsd);
++        ueTxPowerDbm[ue->first] = ueTxPower; // JAMMER PATCH
++        ueNoiseFigureDb[ue->first] = uePhy->GetNoiseFigure();
++        ueMobility[ue->first] = ueMob;
+ 
+         m_rxPsdMap[ue->first] = rxPsd ; //txPsd->Copy();;
+         *totalReceivedPsd += *rxPsd;
+@@ -718,6 +835,54 @@ MmWaveEnbPhy::UpdateUeSinrEstimate()
+         NS_LOG_LOGIC("interference " << interference);
+         SpectrumValue sinr = *(ue->second) / (*noisePsd); // + interference);
+         // we consider the SNR only!
++        if (m_dlSinrWithJammers)
++        {
++            // JAMMER PATCH: downlink SINR at the UE receiver. Same (reciprocal) path loss and
++            // beamforming gain as above, gNB transmit power, UE noise figure, plus jammers.
++            uint64_t imsi = ue->first;
++            double dlScale = std::pow(10.0, (m_txPower - ueTxPowerDbm[imsi]) / 10.0);
++            SpectrumValue dlSignal = (*(ue->second)) * dlScale;
++            Ptr<SpectrumValue> ueNoisePsd =
++                MmWaveSpectrumValueHelper::CreateNoisePowerSpectralDensity(m_phyMacConfig,
++                                                                           ueNoiseFigureDb[imsi]);
++            SpectrumValue denominator = *ueNoisePsd;
++            double jamTotalW = 0.0; // JAMMER PATCH: total jammer power at the UE
++            for (const auto& jam : ActiveJammers())
++            {
++                double jamRxDbm =
++                    jam.pathLoss->CalcRxPower((jam.txPowerDbm + g_jamOffsetDb), jam.mobility, ueMobility[imsi]);
++                Ptr<SpectrumValue> jamPsd =
++                    MmWaveSpectrumValueHelper::CreateTxPowerSpectralDensity(m_phyMacConfig,
++                                                                            (jam.txPowerDbm + g_jamOffsetDb),
++                                                                            m_listOfSubchannels);
++                *jamPsd *= std::pow(10.0, (jamRxDbm - (jam.txPowerDbm + g_jamOffsetDb)) / 10.0);
++                denominator += *jamPsd;
++                jamTotalW += Integral(*jamPsd);
++                NS_LOG_DEBUG("Cell " << m_cellId << " UE " << imsi << " jammer rx power "
++                                     << jamRxDbm << " dBm");
++            }
++            sinr = dlSignal / denominator;
++            // JAMMER PATCH: log received signal (RSRP-like), jammer and noise power once
++            // per UE SINR report period (every UpdateUeSinrEstimatePeriod, 25.6 ms)
++            if (m_roundFromLastUeSinrUpdate == 0)
++            {
++                if (!g_jammerRxLog.is_open())
++                {
++                    g_jammerRxLog.open("MmWaveJammerRx.txt", std::ios_base::out | std::ios_base::trunc);
++                    g_jammerRxLog << "time_s imsi cellId S_dBm J_dBm N_dBm sinr_dB" << std::endl;
++                }
++                double sW = Integral(dlSignal);
++                static const bool jgRsrpOn = std::getenv("JG_RSRP_KPM") != nullptr; // JGRSRP3
++                if (jgRsrpOn)
++                    s_lastRsrpDbm[imsi][m_cellId] = 10.0 * std::log10(sW > 0 ? sW : 1e-30) + 30.0; // JGRSRP
++                double nW = Integral(*ueNoisePsd);
++                double sinrLin = Sum(sinr) / (sinr.GetSpectrumModel()->GetNumBands());
++                g_jammerRxLog << Simulator::Now().GetSeconds() << " " << imsi << " " << m_cellId << " "
++                              << 10 * std::log10(sW) + 30 << " "
++                              << (jamTotalW > 0 ? 10 * std::log10(jamTotalW) + 30 : -999.0) << " "
++                              << 10 * std::log10(nW) + 30 << " " << 10 * std::log10(sinrLin) << "\n";
++            }
++        }
+         NS_LOG_LOGIC("sinr " << sinr);
+         double sinrAvg = Sum(sinr) / (sinr.GetSpectrumModel()->GetNumBands());
+         NS_LOG_DEBUG("Time " << Simulator::Now().GetSeconds() << " CellId " << m_cellId << " UE "
+diff --git a/src/mmwave/model/mmwave-enb-phy.h b/src/mmwave/model/mmwave-enb-phy.h
+index 4dc3fb0f..73520d03 100644
+--- a/src/mmwave/model/mmwave-enb-phy.h
++++ b/src/mmwave/model/mmwave-enb-phy.h
+@@ -42,6 +42,10 @@
+ #include <ns3/lte-enb-cphy-sap.h>
+ #include <ns3/lte-enb-phy-sap.h>
+ #include <ns3/mmwave-harq-phy.h>
++#include <ns3/mobility-model.h>
++#include <ns3/propagation-loss-model.h>
++
++#include <vector>
+ 
+ namespace ns3
+ {
+@@ -68,6 +72,25 @@ class MmWaveEnbPhy : public MmWavePhy
+     virtual ~MmWaveEnbPhy();
+ 
+     static TypeId GetTypeId(void);
++
++    // JAMMER PATCH: register an external jammer. Its power received at the UE is added
++    // to the denominator of the L3 SINR estimate (when DlSinrWithJammers is true).
++    static void AddJammer(Ptr<MobilityModel> jammerMobility,
++                          double txPowerDbm,
++                          Ptr<PropagationLossModel> pathLossModel);
++    // JAMMER PATCH: remove all registered jammers (call before Simulator::Destroy)
++    static void ClearJammers();
++    // JGRSRP: last wideband received signal power [dBm] per UE and NR cell (NaN if unknown)
++    static double GetLastRsrpDbm(uint64_t imsi, uint16_t cellId);
++    static std::map<uint64_t, std::map<uint16_t, double>> s_lastRsrpDbm;
++    // JAMMER PATCH (data path): total jammer power [W] received at a position, and whether the
++    // jammers also act on the data reception of the UEs (global value --jammerDataPath)
++    static double GetJammerRxPowerW(Ptr<MobilityModel> rx);
++    static bool GetJammerDataPath();
++    // JAMMER PATCH: switch all registered jammers on/off at run time (default on)
++    static void SetJammersActive(bool on);
++    // JAMMER PATCH (JamGuard): dB offset added to the EIRP of every jammer (time-varying power)
++    static void SetJammerPowerOffsetDb(double db);
+     virtual void DoInitialize(void) override;
+     virtual void DoDispose(void) override;
+ 
+@@ -177,6 +200,19 @@ class MmWaveEnbPhy : public MmWavePhy
+                                    std::pair<uint64_t, uint64_t>);
+ 
+   private:
++    // JAMMER PATCH
++    struct JammerInfo
++    {
++        Ptr<MobilityModel> mobility;
++        double txPowerDbm;
++        Ptr<PropagationLossModel> pathLoss;
++    };
++
++    static std::vector<JammerInfo> s_jammers; //!< jammers, shared by all gNBs
++    static bool s_jammersActive;              //!< JAMMER PATCH: jammers switched on
++    static const std::vector<JammerInfo>& ActiveJammers();
++    bool m_dlSinrWithJammers;                 //!< report DL SINR S/(N_UE + J) instead of SNR
++
+     bool AddUePhy(uint16_t rnti);
+     // LteEnbCphySapProvider forwarded methods
+     void DoSetBandwidth(uint8_t ulBandwidth, uint8_t dlBandwidth);
+diff --git a/src/mmwave/model/mmwave-flex-tti-mac-scheduler.cc b/src/mmwave/model/mmwave-flex-tti-mac-scheduler.cc
+index c159f050..cdf47dca 100644
+--- a/src/mmwave/model/mmwave-flex-tti-mac-scheduler.cc
++++ b/src/mmwave/model/mmwave-flex-tti-mac-scheduler.cc
+@@ -1,3 +1,7 @@
++#include <functional>
++#include <vector>
++#include <algorithm>
++#include <ns3/slice-registry.h>
+ /* -*-  Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil; -*- */
+ /*
+  *   Copyright (c) 2011 Centre Tecnologic de Telecomunicacions de Catalunya (CTTC)
+@@ -1115,6 +1119,13 @@ MmWaveFlexTtiMacScheduler::DoSchedTriggerReq(
+                     else
+                     {
+                         itUeInfo->second.m_dlMcs = m_amc->GetMcsFromCqi(cqi); // get MCS
++                        { // B1 MCS cap (baseline), per cell, set by the controller
++                            int cap = SliceRegistry::Instance ().McsCap (SliceRegistry::Instance ().CurrentCell ());
++                            if (cap >= 0 && itUeInfo->second.m_dlMcs > cap)
++                            {
++                                itUeInfo->second.m_dlMcs = cap;
++                            }
++                        }
+                     }
+ 
+                     // temporarily store the TX queue size
+@@ -1298,6 +1309,74 @@ MmWaveFlexTtiMacScheduler::DoSchedTriggerReq(
+     // UL flows
+     if (nFlowsTot > 0)
+     {
++        if (SliceRegistry::Instance ().Enabled ())
++          for (auto& kv : ueInfo)
++            if (kv.second.m_maxDlSymbols > 0)
++              SliceRegistry::Instance ().DebugDemand (SliceRegistry::Instance ().CurrentCell (), kv.first, kv.second.m_maxDlSymbols);
++        // SLICE PATCH v2: work-conserving slice quota. A slice with max ratio r < 1 gives up symbols
++        // only as far as the other slices need them, at most (1 - r) of the symbols of this slot.
++        if (SliceRegistry::Instance ().Enabled () && totDlSymReq > (int) symAvail && (int) symAvail > 0)
++          {
++            SliceRegistry& sr = SliceRegistry::Instance ();
++            uint16_t cell = sr.CurrentCell ();
++            int sa = (int) symAvail;
++            std::map<uint8_t, int> dem;
++            for (auto& kv : ueInfo)
++              dem[sr.SliceOf (cell, kv.first)] += kv.second.m_maxDlSymbols;
++            for (auto& sd : dem)
++              {
++                double r = sr.SliceMaxRatio (cell, sd.first);
++                if (r >= 1.0 || sd.second <= 0)
++                  continue;
++                int others = 0;
++                for (auto& o : dem)
++                  if (o.first != sd.first)
++                    others += o.second;
++                int reserve = std::min (others, (int) ((1.0 - r) * sa));
++                int allowed = std::max (0, sa - reserve);
++                if (sd.second <= allowed)
++                  continue;
++                // deficit round robin inside the slice: credit carries over between slots,
++                // so a UE whose share rounds to 0 in one slot is served in a later slot
++                static std::map<std::pair<uint16_t, uint16_t>, double> s_sliceCredit;
++                std::vector<std::pair<uint16_t, int>> mem;
++                for (auto& kv : ueInfo)
++                  if (kv.second.m_maxDlSymbols > 0 && sr.SliceOf (cell, kv.first) == sd.first)
++                    mem.push_back (std::make_pair (kv.first, (int) kv.second.m_maxDlSymbols));
++                int given = 0;
++                for (auto& m : mem)
++                  {
++                    double& cr = s_sliceCredit[std::make_pair (cell, m.first)];
++                    cr = std::min (cr + (double) m.second * allowed / sd.second, (double) m.second);
++                    int g = std::max (0, std::min ((int) cr, allowed - given));
++                    ueInfo[m.first].m_maxDlSymbols = (uint8_t) g;
++                    cr -= g;
++                    given += g;
++                  }
++                while (given < allowed)
++                  {
++                    double bestCr = -1e9;
++                    uint16_t bestR = 0;
++                    bool found = false;
++                    for (auto& m : mem)
++                      {
++                        double cr = s_sliceCredit[std::make_pair (cell, m.first)];
++                        if (ueInfo[m.first].m_maxDlSymbols < m.second && cr > bestCr)
++                          {
++                            bestCr = cr;
++                            bestR = m.first;
++                            found = true;
++                          }
++                      }
++                    if (!found)
++                      break;
++                    ueInfo[bestR].m_maxDlSymbols++;
++                    s_sliceCredit[std::make_pair (cell, bestR)] -= 1.0;
++                    given++;
++                  }
++                totDlSymReq -= (sd.second - given);
++              }
++          }
+         int remSym = totDlSymReq + totUlSymReq;
+         if (remSym > symAvail)
+         {
+@@ -1460,10 +1539,12 @@ MmWaveFlexTtiMacScheduler::DoSchedTriggerReq(
+             dci.m_format = 0;
+             dci.m_symStart = symIdx;
+             dci.m_numSym = ueSchedInfo.m_dlSymbols;
++            SliceRegistry::Instance ().DebugAlloc (SliceRegistry::Instance ().CurrentCell (), dci.m_rnti, dci.m_numSym);
+             symIdx += ueSchedInfo.m_dlSymbols;
+             dci.m_ndi = 1;
+             dci.m_mcs = ueSchedInfo.m_dlMcs;
+             dci.m_tbSize = m_amc->CalculateTbSize(dci.m_mcs, dci.m_numSym);
++            SliceRegistry::Instance ().DebugTb (SliceRegistry::Instance ().CurrentCell (), dci.m_rnti, dci.m_tbSize);
+             /*while (dci.m_tbSize > m_phyMacConfig->GetMaxTbSize () && dci.m_mcs > 0)
+             {
+                     dci.m_mcs--;
+@@ -1547,7 +1628,9 @@ MmWaveFlexTtiMacScheduler::DoSchedTriggerReq(
+                         }
+                 }*/
+                 // update RLC buffer info with expected queue size after scheduling
+-                UpdateDlRlcBufferInfo(itUeInfo->first,
++                // SLICE PATCH (bug fix): m_size - m_subHdrSize underflows uint16 for tiny TBs and empties the buffer record
++                if (ueSchedInfo.m_rlcPduInfo[i].m_size > m_subHdrSize + 4)
++                  UpdateDlRlcBufferInfo(itUeInfo->first,
+                                       ueSchedInfo.m_rlcPduInfo[i].m_lcid,
+                                       ueSchedInfo.m_rlcPduInfo[i].m_size - m_subHdrSize);
+                 ttiInfo.m_rlcPduInfo.push_back(ueSchedInfo.m_rlcPduInfo[i]);
+diff --git a/src/mmwave/model/mmwave-spectrum-phy.cc b/src/mmwave/model/mmwave-spectrum-phy.cc
+index 5078f9da..df1f460c 100644
+--- a/src/mmwave/model/mmwave-spectrum-phy.cc
++++ b/src/mmwave/model/mmwave-spectrum-phy.cc
+@@ -36,6 +36,7 @@
+ * Modified: Kamil Kociszewski <kamil.kociszewski@orange.com>
+ */
+ 
++#include <ns3/mmwave-enb-phy.h>
+ #include <ns3/object-factory.h>
+ #include <ns3/log.h>
+ #include <ns3/ptr.h>
+@@ -460,6 +461,24 @@ MmWaveSpectrumPhy::StartRxData (Ptr<MmwaveSpectrumSignalParametersDataFrame> par
+             // first transmission, i.e., we're IDLE and we start RX
+             m_firstRxStart = Simulator::Now ();
+             m_firstRxDuration = params->duration;
++            // JAMMER PATCH (data path): a UE receiving downlink data also receives the jammers,
++            // modelled as a wideband interferer spread uniformly over the carrier for the slot
++            if (MmWaveEnbPhy::GetJammerDataPath() && !m_isEnb)
++              {
++                double jamW = MmWaveEnbPhy::GetJammerRxPowerW (GetMobility ());
++                if (jamW > 0.0)
++                  {
++                    Ptr<const SpectrumModel> sm = params->psd->GetSpectrumModel ();
++                    double bw = 0.0;
++                    for (Bands::const_iterator b = sm->Begin (); b != sm->End (); ++b)
++                      {
++                        bw += b->fh - b->fl;
++                      }
++                    Ptr<SpectrumValue> jamPsd = Create<SpectrumValue> (sm);
++                    (*jamPsd) = jamW / bw;
++                    m_interferenceData->AddSignal (jamPsd, params->duration);
++                  }
++              }
+             NS_LOG_LOGIC (this << " scheduling EndRx with delay " << params->duration.GetSeconds ()
+                                << "s");
+ 

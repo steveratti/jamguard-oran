@@ -1,0 +1,177 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 43a7452..1ecb474 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -9,6 +9,7 @@ include_directories(${CMAKE_BINARY_DIR}/include/ns3)
+ 
+ # Define the source files
+ set(source_files
++    model/slice-registry.cc
+     model/oran-interface.cc
+     model/asn1c-types.cc
+     model/function-description.cc
+@@ -33,6 +34,7 @@ set(header_files
+     model/kpm-indication.h
+     model/kpm-function-description.h
+     model/ric-control-message.h
++    model/slice-registry.h
+     model/ric-control-function-description.h
+     model/ccc-function-description.h
+     model/ccc-message.h
+diff --git a/helper/lte-indication-message-helper.cc b/helper/lte-indication-message-helper.cc
+index 1f77021..092b087 100644
+--- a/helper/lte-indication-message-helper.cc
++++ b/helper/lte-indication-message-helper.cc
+@@ -1,3 +1,6 @@
++#include <map>      // JGTHP
++#include <vector>
++#include <string>
+ /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+ /*
+  * Copyright (c) 2022 Northeastern University
+@@ -35,6 +38,14 @@ LteIndicationMessageHelper::LteIndicationMessageHelper (IndicationMessageType ty
+                    "Wrong type for LTE Indication Message, expected CuUp or CuCp");
+ }
+ 
++// JGTHP: extra per-UE CU-UP items
++static std::map<std::string, std::vector<std::pair<std::string, double>>> g_jgLteUeExtra;
++void
++LteIndicationMessageHelper::JgAddUeExtra (std::string ueImsiComplete, std::string name, double value)
++{
++  g_jgLteUeExtra[ueImsiComplete].push_back ({name, value});
++}
++
+ void
+ LteIndicationMessageHelper::AddCuUpUePmItem (std::string ueImsiComplete, long txBytes,
+                                              long txDlPackets, double pdcpThroughput,
+@@ -57,6 +68,14 @@ LteIndicationMessageHelper::AddCuUpUePmItem (std::string ueImsiComplete, long tx
+       ueVal->AddItem<double> ("DRB.PdcpSduDelayDl.UEID", pdcpLatency);
+     }
+ 
++  auto jgIt = g_jgLteUeExtra.find (ueImsiComplete); // JGTHP
++  if (jgIt != g_jgLteUeExtra.end ())
++    {
++      for (auto &jgItem : jgIt->second)
++        ueVal->AddItem<double> (jgItem.first, jgItem.second);
++      g_jgLteUeExtra.erase (jgIt);
++    }
++
+   m_msgValues.m_ueIndications.insert (ueVal);
+ }
+ 
+diff --git a/helper/lte-indication-message-helper.h b/helper/lte-indication-message-helper.h
+index b4c3c2d..b1eb5e6 100644
+--- a/helper/lte-indication-message-helper.h
++++ b/helper/lte-indication-message-helper.h
+@@ -46,6 +46,8 @@ public:
+   void FillCuCpValues (uint16_t numActiveUes);
+ 
+   void AddCuCpUePmItem (std::string ueImsiComplete, long numDrb, long drbRelAct);
++  // JGTHP: extra per-UE items appended to the UE list of the next AddCuUpUePmItem
++  void JgAddUeExtra (std::string ueImsiComplete, std::string name, double value);
+ 
+ private:
+ };
+diff --git a/helper/mmwave-indication-message-helper.cc b/helper/mmwave-indication-message-helper.cc
+index 666dcaa..2ea3db3 100644
+--- a/helper/mmwave-indication-message-helper.cc
++++ b/helper/mmwave-indication-message-helper.cc
+@@ -1,3 +1,8 @@
++#include <map> // JGRSRP2
++#include <string>
++#include <utility>
++#include <vector>
++static std::map<std::string, std::vector<std::pair<std::string, double>>> g_jgUeExtra;
+ /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+ /*
+  * Copyright (c) 2022 Northeastern University
+@@ -81,7 +86,9 @@ MmWaveIndicationMessageHelper::AddDuUePmItem (
+     long mac64Qam, long macRetx, long macVolume, long macPrb, long macMac04, long macMac59,
+     long macMac1014, long macMac1519, long macMac2024, long macMac2529, long macSinrBin1,
+     long macSinrBin2, long macSinrBin3, long macSinrBin4, long macSinrBin5, long macSinrBin6,
+-    long macSinrBin7, long rlcBufferOccup, double drbThrDlUeid)
++    long macSinrBin7, long rlcBufferOccup, double drbThrDlUeid,
++    long macErrInitial, long macErrTotal,
++    long macErrResidual)   /* JGRBLER_B */
+ {
+ 
+   Ptr<MeasurementItemList> ueVal = Create<MeasurementItemList> (ueImsiComplete);
+@@ -93,6 +100,30 @@ MmWaveIndicationMessageHelper::AddDuUePmItem (
+       ueVal->AddItem<long> ("TB.TotNbrDlInitial.16Qam.UEID", mac16Qam);
+       ueVal->AddItem<long> ("TB.TotNbrDlInitial.64Qam.UEID", mac64Qam);
+       ueVal->AddItem<long> ("TB.ErrTotalNbrDl.1.UEID", macRetx);
++      /* JGRBLER_B: the error counters of TS 28.552 clause 5.1.1.7. The stock item above is left
++         untouched -- it carries the retransmission count, which is what this platform has always
++         reported -- and these carry what the clause actually defines. The UE is in the name of
++         the last three so that an xApp which parses names can attribute them without reading the
++         per-UE container of the indication. Emitted only when the caller supplies them. */
++      if (macErrInitial >= 0)
++        {
++          ueVal->AddItem<long> ("TB.ErrNbrDlInitial.UEID", macErrInitial);
++          ueVal->AddItem<long> ("TBErrInitDl_UEID_" + ueImsiComplete, macErrInitial);
++        }
++      if (macErrTotal >= 0)
++        {
++          ueVal->AddItem<long> ("TBErrTotTrueDl_UEID_" + ueImsiComplete, macErrTotal);
++        }
++      if (macErrResidual >= 0)
++        {
++          ueVal->AddItem<long> ("TB.ResidErrNbrDl.UEID", macErrResidual);
++          ueVal->AddItem<long> ("TBErrResidDl_UEID_" + ueImsiComplete, macErrResidual);
++        }
++      /* JGBLER: the same two counters, with the UE in the measurement name, so that an
++         xApp can attribute them without reading the per-UE container of the indication.
++         The stock items above are left untouched. */
++      ueVal->AddItem<long> ("TBTotDl_UEID_" + ueImsiComplete, macPduUe);
++      ueVal->AddItem<long> ("TBErrDl_UEID_" + ueImsiComplete, macRetx);
+       ueVal->AddItem<long> ("QosFlow.PdcpPduVolumeDL_Filter.UEID", macVolume);
+       ueVal->AddItem<long> ("RRU.PrbUsedDl.UEID", (long) std::ceil (macPrb));
+       ueVal->AddItem<long> ("CARR.PDSCHMCSDist.Bin1.UEID", macMac04);
+@@ -194,9 +225,23 @@ MmWaveIndicationMessageHelper::AddCuCpUePmItem (std::string ueImsiComplete, long
+   // L3neighSINR_cell_XX
+   ueVal->AddItem<Ptr<L3RrcMeasurements>> ("HO.TrgtCellQual.RS-SINR.UEID", l3RrcMeasurementNeigh);
+ 
++  auto jgIt = g_jgUeExtra.find (ueImsiComplete); // JGRSRP2
++  if (jgIt != g_jgUeExtra.end ())
++    {
++      for (auto &jgItem : jgIt->second)
++        ueVal->AddItem<double> (jgItem.first, jgItem.second);
++      g_jgUeExtra.erase (jgIt);
++    }
++
+   m_msgValues.m_ueIndications.insert (ueVal);
+ }
+ 
++void
++MmWaveIndicationMessageHelper::JgAddUeExtra (std::string ueImsiComplete, std::string name, double value)
++{
++  g_jgUeExtra[ueImsiComplete].push_back ({name, value});
++}
++
+ MmWaveIndicationMessageHelper::~MmWaveIndicationMessageHelper ()
+ {
+ }
+diff --git a/helper/mmwave-indication-message-helper.h b/helper/mmwave-indication-message-helper.h
+index ac55b2c..cfbe53e 100644
+--- a/helper/mmwave-indication-message-helper.h
++++ b/helper/mmwave-indication-message-helper.h
+@@ -49,7 +49,9 @@ public:
+                       long macMac04, long macMac59, long macMac1014, long macMac1519,
+                       long macMac2024, long macMac2529, long macSinrBin1, long macSinrBin2,
+                       long macSinrBin3, long macSinrBin4, long macSinrBin5, long macSinrBin6,
+-                      long macSinrBin7, long rlcBufferOccup, double drbThrDlUeid);
++                      long macSinrBin7, long rlcBufferOccup, double drbThrDlUeid,
++    long macErrInitial = -1, long macErrTotal = -1,
++    long macErrResidual = -1   /* JGRBLER_B */);
+ 
+   void AddDuCellPmItem (
+       long macPduCellSpecific, long macPduInitialCellSpecific, long macQpskCellSpecific,
+@@ -61,6 +63,8 @@ public:
+       long macSinrBin5CellSpecific, long macSinrBin6CellSpecific, long macSinrBin7CellSpecific,
+       long rlcBufferOccupCellSpecific, long activeUeDl);
+   void AddDuCellResRepPmItem (Ptr<CellResourceReport> cellResRep);
++  // JGRSRP2: extra per-UE items (e.g. RSRP), appended to the UE list of the next AddCuCpUePmItem
++  void JgAddUeExtra (std::string ueImsiComplete, std::string name, double value);
+   void AddCuCpUePmItem (std::string ueImsiComplete, long numDrb, long drbRelAct,
+                         Ptr<L3RrcMeasurements> l3RrcMeasurementServing,
+                         Ptr<L3RrcMeasurements> l3RrcMeasurementNeigh);
