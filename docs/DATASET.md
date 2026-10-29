@@ -14,6 +14,7 @@ Archives larger than 2 GB are split (`*.part_00`, `*.part_01`): join with `cat f
 | jamguard_D5.tar.gz | Detection vs. spatial clustering (tab:prior), keyed jammer | held-out set: pos40, pos50, neg (attack-free), keyed40, keyed50 | 90 | 386M |
 | jamguard_LA.tar.gz | When the escape route is jammed (tab:anchor), Scenario A | NR jammed only; p8 p9, 15 seeds (Scenario A p0 and p4: campaigns F and F2) | 30 | 137M |
 | jamguard_LJ.tar.gz | When the escape route is jammed (tab:anchor), Scenario B | NR and LTE anchor jammed; p0 p4 p8 p9, 15 seeds | 60 | 270M |
+| jamguard_D2.tar.gz | Detection: D2 inside the closed loop (tab:d2loop) | Scenario A p4 and Scenario B p9, 50 dBm, 15 seeds, D1 (drop 8 dB) and D2 (multi-link, drop 10 dB), same build: jamx_D1A, jamx_D2A, jamx_D1B, jamx_D2B | 60 | 272M |
 | jamguard_N20.tar.gz | Scaling (tab:scale) | 20 UEs, Scenario A (LA) and B (LJ), 5 seeds | 25 | 228M |
 | jamguard_N40.tar.gz | Scaling (tab:scale) | 40 UEs, Scenario A (LA) and B (LJ), 3 seeds | 15 | 269M |
 | jamguard_E.tar.gz | Effect of the E2 loop delay; what the slice cap buys | d<ms> = E2 loop delay 10-1000 ms; q<q>_m<L_e> = eMBB quota and eMBB budget on the anchor; p4, 50 dBm, 5 seeds | 55 | 248M |
